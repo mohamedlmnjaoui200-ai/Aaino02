@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/api/index?route=root" },
+    { "source": "/health", "destination": "/api/index?route=health" },
+    { "source": "/setup", "destination": "/api/index?route=setup" },
+    { "source": "/webhook/main", "destination": "/api/index?route=main" },
+    { "source": "/webhook/child/:id", "destination": "/api/index?route=child&id=:id" }
+  ],
+  "functions": {
+    "api/index.js": { "maxDuration": 30 }
+  }
+}
