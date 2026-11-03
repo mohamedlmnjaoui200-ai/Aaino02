@@ -6,12 +6,11 @@ const { sendStored } = require('./render');
 
 // معالجة تحديثات البوتات التي أنشأها المستخدمون
 async function handle(botId, update) {
-  const bot = store.db.bots[botId];
+  const bot = await store.getBot(botId);
   if (!bot) return;
   const msg = update.message;
   if (!msg || !msg.text) return;
 
-  // استخراج الأمر (مع إزالة @username)
   const m = msg.text.trim().match(/^\/([A-Za-z0-9_]+)(?:@\w+)?(?:\s|$)/);
   if (!m) return;
   const cmd = m[1].toLowerCase();
