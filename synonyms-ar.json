@@ -1,0 +1,23 @@
+{
+  "دالة": ["function", "method"], "دوال": ["functions", "methods"],
+  "متغير": ["variable"], "ثابت": ["constant", "const"],
+  "مصفوفة": ["array", "list"], "قائمة": ["list", "array"],
+  "كائن": ["object"], "صنف": ["class"], "فئة": ["class"],
+  "وراثة": ["inheritance"], "واجهة": ["interface"],
+  "حلقة": ["loop"], "تكرار": ["loop", "iteration"], "شرط": ["condition", "if"],
+  "سلسلة": ["string"], "نص": ["string", "text"],
+  "منطقي": ["boolean"], "استثناء": ["exception"], "خطأ": ["error"], "اخطاء": ["errors"],
+  "مكتبة": ["library"], "حزمة": ["package"], "وحدة": ["module"],
+  "تثبيت": ["install", "installation"], "استيراد": ["import"], "تصدير": ["export"],
+  "استعلام": ["query"], "جدول": ["table"], "مفتاح": ["key"],
+  "ملف": ["file"], "مجلد": ["directory", "folder"],
+  "خادم": ["server"], "عميل": ["client"], "طلب": ["request"], "استجابة": ["response"],
+  "متزامن": ["sync", "synchronous"], "وعد": ["promise"], "خيط": ["thread"],
+  "ذاكرة": ["memory"], "مؤشر": ["pointer", "cursor"],
+  "مترجم": ["compiler"], "مفسر": ["interpreter"], "تصحيح": ["debug", "debugging"],
+  "اختبار": ["test", "testing"], "توثيق": ["documentation", "docs"],
+  "مكون": ["component"], "حالة": ["state"], "خصائص": ["props", "properties"],
+  "تشفير": ["encryption", "crypto"], "مصادقة": ["authentication", "auth"], "صلاحيات": ["permissions"],
+  "قاعدة بيانات": ["database"], "إطار عمل": ["framework"], "واجهة برمجة": ["api"],
+  "هندسة عكسية": ["reverse engineering", "disassembly", "decompile"], "تفكيك": ["disassemble", "disassembly"]
+}
