@@ -1,29 +1,63 @@
 'use strict';
+// بوت الصانع الرئيسي: إنشاء وإدارة البوتات (صفحات، أزرار، أوامر، بث، إحصائيات،
+// اشتراك إجباري، تواصل، إضافة تلقائية، إحالات، نجوم تيليجرام، لوحة أدمن)
 const tg = require('./telegram');
 const store = require('./store');
 const { encrypt, decrypt, secretFor } = require('./crypto');
-const { COLORS, styled, sendStored } = require('./render');
+const R = require('./render');
+const { COLORS, BTN_TYPES, styled, extractMessage, sendPage } = R;
 
-const MAX_BOTS_PER_USER = 10;
-const MAX_BUTTONS = 6;
+/* ------------------------------------------------------------------ */
+/*  الإعدادات                                                          */
+/* ------------------------------------------------------------------ */
+const BASE_BOTS = Number(process.env.MAX_BOTS_PER_USER || 10); // الحد الأساسي لكل مستخدم
+const BOTS_CAP = 100; // سقف مطلق
+const REF_SLOTS = Number(process.env.REF_SLOTS || 1); // مساحات إضافية لكل إحالة
+const MAX_BUTTONS = 12; // أزرار لكل صفحة
+const MAX_PAGES = 30; // صفحات لكل بوت
+const MAX_FORCE = 5; // قنوات الاشتراك الإجباري
+const BC_BUDGET = Number(process.env.BC_BUDGET_MS || 8000); // ميزانية وقت البث في كل مرة
 const TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
+const CMD_RE = /^[a-z0-9_]{2,32}$/;
+const PACKS = [
+  { slots: 1, stars: Number(process.env.STARS_1 || 25) },
+  { slots: 3, stars: Number(process.env.STARS_3 || 60) },
+  { slots: 10, stars: Number(process.env.STARS_10 || 180) },
+];
 
 const main = () => process.env.MAIN_BOT_TOKEN;
 const baseUrl = () =>
   String(process.env.BASE_URL || `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`).replace(/\/+$/, '');
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const btn = (text, data, style) => styled({ text, callback_data: data }, style);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isAdmin = (uid) =>
+  String(process.env.ADMIN_ID || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .includes(String(uid));
 
-/* ---------- أدوات الإرسال ---------- */
-function send(chatId, text, kb) {
-  const p = { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
+async function mainMe() {
+  if (!global._makerMe) global._makerMe = await tg.call(main(), 'getMe');
+  return global._makerMe;
+}
+
+/* ------------------------------------------------------------------ */
+/*  أدوات الإرسال                                                      */
+/* ------------------------------------------------------------------ */
+function send(chatId, text, kb, extra) {
+  const p = Object.assign(
+    { chat_id: chatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } },
+    extra || {}
+  );
   if (kb) p.reply_markup = { inline_keyboard: kb };
   return tg.call(main(), 'sendMessage', p);
 }
 
 async function show(ctx, text, kb) {
   // إن جاء من زر: عدّل الرسالة، وإلا أرسل رسالة جديدة
-  if (ctx.q) {
+  if (ctx.q && ctx.q.message && ctx.q.message.text !== undefined) {
     try {
       await tg.call(main(), 'editMessageText', {
         chat_id: ctx.chatId,
@@ -41,322 +75,207 @@ async function show(ctx, text, kb) {
   await send(ctx.chatId, text, kb);
 }
 
-/* ---------- الواجهات ---------- */
+const alert = (ctx, text) =>
+  tg.call(main(), 'answerCallbackQuery', { callback_query_id: ctx.q.id, text, show_alert: true }).catch(() => {});
+
+async function setState(uid, u, state) {
+  u.state = state;
+  await store.saveUser(uid, u);
+}
+
+/* ------------------------------------------------------------------ */
+/*  النصوص والقوائم الرئيسية                                            */
+/* ------------------------------------------------------------------ */
 function mainMenu() {
   return [
-    [btn('➕ إنشاء بوت جديد', 'new', 'success')],
-    [btn('🤖 بوتاتي', 'list', 'primary')],
-    [btn('ℹ️ المساعدة', 'help')],
+    [btn('➕ إضافة بوت (بالتوكن)', 'new', 'success'), btn('➕ إضافة بوت (تلقائيًا)', 'auto', 'success')],
+    [btn('🤖 قائمة البوتات', 'list', 'primary')],
+    [btn('⭐ شراء مساحة بوتات', 'shop'), btn('👥 نظام الإحالة', 'ref')],
+    [btn('🎩 طلب الإعلان', 'ads'), btn('📞 جهات الاتصال', 'contact')],
+    [btn('❓ مساعدة', 'help')],
   ];
 }
 
 const WELCOME =
   '👋 أهلًا بك في <b>صانع البوتات</b>\n\n' +
-  'أنشئ بوت تيليجرام خاصًا بك في دقيقة: ضع توكن البوت، ثم حدّد الرسالة التي ستظهر عند كتابة <code>/ms</code> وأضف أزرارًا سفلية بالألوان والروابط التي تريدها.';
+  'أنشئ بوت قوائم احترافي في دقيقة: صفحات متعددة، أزرار بالألوان، وسائط، أوامر مخصصة، بث للمشتركين، ' +
+  'اشتراك إجباري، وإحصائيات.\n\nاضغط «إدارة البوتات» للبدء 👇';
 
 const HELP =
   '<b>طريقة الاستخدام</b>\n\n' +
-  '1️⃣ أنشئ بوتًا من @BotFather وانسخ التوكن.\n' +
-  '2️⃣ اضغط «إنشاء بوت جديد» وأرسل التوكن.\n' +
-  '3️⃣ أرسل الرسالة التي تريدها كما هي (التنسيق والروابط تُحفظ كما هي).\n' +
-  '4️⃣ أضف أزرارًا سفلية (نص + رابط + لون) إن أردت.\n' +
-  '5️⃣ اكتب <code>/ms</code> في بوتك لتظهر الرسالة.\n\n' +
+  '1️⃣ أضف بوتك: <b>تلقائيًا</b> بضغطة واحدة، أو بالتوكن من @BotFather.\n' +
+  '2️⃣ أرسل رسالة الصفحة الرئيسية (نص أو صورة أو فيديو بنفس التنسيق).\n' +
+  '3️⃣ أضف أزرارًا: رابط، صفحة داخلية، نسخ نص، أو تطبيق مصغّر.\n' +
+  '4️⃣ أنشئ صفحات وأوامر مخصصة (مثل /prices).\n' +
+  '5️⃣ فعّل الاشتراك الإجباري أو وضع التواصل من «الإعدادات».\n' +
+  '6️⃣ أرسل بثًا لمشتركي بوتك من «بث رسالة».\n\n' +
+  '<b>المتغيّرات داخل النص:</b>\n' +
+  '<code>{name}</code> الاسم الكامل • <code>{first_name}</code> الاسم الأول • ' +
+  '<code>{username}</code> المعرّف • <code>{id}</code> الآيدي • <code>{bot}</code> معرّف البوت\n\n' +
   '🔒 التوكنات تُخزَّن مشفّرة.';
 
-function botPanel(bot) {
+/* ------------------------------------------------------------------ */
+/*  الحدود والإحالات                                                    */
+/* ------------------------------------------------------------------ */
+async function botLimit(uid, u) {
+  const refs = await store.refCount(uid);
+  return Math.min(BOTS_CAP, BASE_BOTS + (u.extraSlots || 0) + refs * REF_SLOTS);
+}
+
+async function ownedBot(uid, id) {
+  const b = await store.getBot(id);
+  return b && b.owner === String(uid) ? b : null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  واجهات البوت                                                       */
+/* ------------------------------------------------------------------ */
+async function botPanel(bot) {
+  const s = await store.subStats(bot.id);
   const text =
     `🤖 <b>${esc(bot.name)}</b> (@${esc(bot.username)})\n\n` +
-    `📝 الرسالة: ${bot.message ? '✅ محفوظة' : '❌ غير محددة'}\n` +
-    `🔘 الأزرار: ${bot.buttons.length}/${MAX_BUTTONS}\n\n` +
-    'اكتب <code>/ms</code> في البوت لعرض الرسالة.';
+    `📄 الصفحات: ${Object.keys(bot.pages).length}\n` +
+    `👥 المشتركون: ${s.active}${s.blocked ? ` (حاظرون: ${s.blocked})` : ''}\n` +
+    `📝 الرئيسية: ${bot.pages.main.message ? '✅ محفوظة' : '❌ غير محددة'}\n\n` +
+    'اكتب <code>/start</code> في البوت لعرض الصفحة الرئيسية.';
   const kb = [
-    [btn('📝 تعديل الرسالة', `msg:${bot.id}`, 'primary')],
-    [btn('🔘 إدارة الأزرار', `btns:${bot.id}`, 'primary')],
-    [btn('👁 معاينة', `prev:${bot.id}`, 'success')],
-    [btn('🗑 حذف البوت', `del:${bot.id}`, 'danger')],
+    [btn('📄 الصفحات والقوائم', `pgs:${bot.id}`, 'primary')],
+    [btn('⌨️ الأوامر', `cmds:${bot.id}`), btn('⚙️ الإعدادات', `set:${bot.id}`)],
+    [btn('📢 بث رسالة', `bc:${bot.id}`, 'success'), btn('📊 الإحصائيات', `st:${bot.id}`)],
+    [btn('🔑 تغيير التوكن', `rtok:${bot.id}`), btn('🗑 حذف البوت', `del:${bot.id}`, 'danger')],
     [btn('🔙 رجوع', 'list')],
   ];
   return { text, kb };
 }
 
-function buttonsPanel(bot) {
-  const lines = bot.buttons.length
-    ? bot.buttons.map((b, i) => `${i + 1}. ${COLORS[b.style || 'default']} — ${esc(b.text)}`).join('\n')
-    : 'لا توجد أزرار بعد.';
-  const kb = [];
-  if (bot.buttons.length < MAX_BUTTONS) kb.push([btn('➕ إضافة زر', `badd:${bot.id}`, 'success')]);
-  bot.buttons.forEach((b, i) => kb.push([btn(`🗑 حذف: ${b.text}`, `bdel:${bot.id}:${i}`, 'danger')]));
-  kb.push([btn('🔙 رجوع', `b:${bot.id}`)]);
-  return { text: `🔘 <b>الأزرار السفلية</b>\n\n${lines}`, kb };
-}
-
-/* ---------- المنطق ---------- */
-async function ownedBot(uid, id) {
-  const b = await store.getBot(id);
-  return b && b.owner === uid ? b : null;
-}
-
 async function showPanel(ctx, bot) {
-  const p = botPanel(bot);
+  const p = await botPanel(bot);
   await show(ctx, p.text, p.kb);
 }
 
-async function createBot(ctx, token) {
-  if (!TOKEN_RE.test(token)) {
-    await send(ctx.chatId, '❌ التوكن غير صالح. تأكد من نسخه كاملًا من @BotFather وأعد إرساله.', [
-      [btn('إلغاء', 'menu')],
-    ]);
-    return;
-  }
-  // احذف رسالة التوكن من المحادثة لحمايته
-  tg.call(main(), 'deleteMessage', { chat_id: ctx.chatId, message_id: ctx.msg.message_id }).catch(() => {});
-
-  let me;
-  try {
-    me = await tg.call(token, 'getMe');
-  } catch (_) {
-    await send(ctx.chatId, '❌ تعذّر التحقق من التوكن. تأكد أنه صحيح وغير ملغى.', [[btn('إلغاء', 'menu')]]);
-    return;
-  }
-  const id = String(me.id);
-  const existing = await store.getBot(id);
-  if (existing && existing.owner !== ctx.uid) {
-    await send(ctx.chatId, '❌ هذا البوت مسجّل لدى مستخدم آخر.', [[btn('🔙 القائمة', 'menu')]]);
-    return;
-  }
-  const count = (await store.botsOf(ctx.uid)).length;
-  if (!existing && count >= MAX_BOTS_PER_USER) {
-    await send(ctx.chatId, `❌ وصلت للحد الأقصى (${MAX_BOTS_PER_USER} بوتات).`, [[btn('🔙 القائمة', 'menu')]]);
-    return;
-  }
-
-  try {
-    await tg.call(token, 'setWebhook', {
-      url: `${baseUrl()}/webhook/child/${id}`,
-      secret_token: secretFor(`child:${id}`),
-      allowed_updates: ['message'],
-      drop_pending_updates: true,
-    });
-    await tg
-      .call(token, 'setMyCommands', { commands: [{ command: 'ms', description: 'عرض الرسالة' }] })
-      .catch(() => {});
-  } catch (e) {
-    await send(ctx.chatId, `❌ فشل ربط البوت: ${esc(e.message)}`, [[btn('🔙 القائمة', 'menu')]]);
-    return;
-  }
-
-  const bot = existing || {
-    id,
-    owner: ctx.uid,
-    message: null,
-    buttons: [],
-    createdAt: Date.now(),
+function pagesPanel(bot) {
+  const kb = Object.values(bot.pages).map((p) => [
+    btn(`${p.id === 'main' ? '🏠' : '📄'} ${p.title}  •  ${R.pageSummary(p)}`, `pg:${bot.id}:${p.id}`, p.id === 'main' ? 'primary' : undefined),
+  ]);
+  if (Object.keys(bot.pages).length < MAX_PAGES) kb.push([btn('➕ صفحة جديدة', `padd:${bot.id}`, 'success')]);
+  kb.push([btn('🔙 رجوع', `b:${bot.id}`)]);
+  return {
+    text: '📄 <b>الصفحات والقوائم</b>\n\nكل صفحة لها رسالة وأزرار. اربط الصفحات ببعضها بزر من نوع «صفحة داخل البوت».',
+    kb,
   };
-  bot.username = me.username;
-  bot.name = me.first_name;
-  bot.tokenEnc = encrypt(token);
-  await store.saveBot(bot);
-  const u0 = await store.getUser(ctx.uid);
-  u0.state = { step: 'message', botId: id };
-  await store.saveUser(ctx.uid, u0);
-
-  await send(
-    ctx.chatId,
-    `✅ تم ربط <b>@${esc(me.username)}</b> بنجاح!\n\nالآن أرسل لي <b>الرسالة</b> التي تريد أن يرسلها البوت عند كتابة <code>/ms</code> (سيتم حفظها كما هي بنفس التنسيق والروابط).`,
-    [[btn('تخطي الآن', `b:${id}`)]]
-  );
 }
 
-async function onMessage(ctx) {
-  const { msg, uid } = ctx;
-  const text = msg.text || '';
-  const u = await store.getUser(uid);
-
-  if (/^\/start(@\w+)?(\s|$)/.test(text) || /^\/menu(@\w+)?(\s|$)/.test(text)) {
-    u.state = null;
-    await store.saveUser(uid, u);
-    return send(ctx.chatId, WELCOME, mainMenu());
-  }
-
-  if (text === '/stats' && String(uid) === String(process.env.ADMIN_ID || '')) {
-    const c = await store.counts();
-    return send(ctx.chatId, `👥 المستخدمون: ${c.users}\n🤖 البوتات: ${c.bots}`);
-  }
-
-  const st = u.state;
-  if (!st) return send(ctx.chatId, 'اختر من القائمة 👇', mainMenu());
-
-  if (st.step === 'token') {
-    return createBot(ctx, text.trim());
-  }
-
-  if (st.step === 'message') {
-    const bot = await ownedBot(uid, st.botId);
-    if (!bot) return;
-    if (!msg.text) return send(ctx.chatId, '⚠️ أرسل الرسالة كنص (يدعم التنسيق والروابط).');
-    if (msg.text.length > 4096) return send(ctx.chatId, '⚠️ الرسالة أطول من 4096 حرفًا.');
-    bot.message = { text: msg.text, entities: msg.entities || [] };
-    await store.saveBot(bot);
-    u.state = null;
-    await store.saveUser(uid, u);
-    await send(ctx.chatId, '✅ تم حفظ الرسالة.');
-    return showPanel(ctx, bot);
-  }
-
-  if (st.step === 'btn_text') {
-    if (!msg.text || msg.text.length > 40) return send(ctx.chatId, '⚠️ أرسل نص الزر (حتى 40 حرفًا).');
-    st.step = 'btn_url';
-    st.text = msg.text.trim();
-    await store.saveUser(uid, u);
-    return send(ctx.chatId, '🔗 الآن أرسل <b>رابط</b> الزر (يبدأ بـ https:// أو http://).', [
-      [btn('إلغاء', `btns:${st.botId}`)],
-    ]);
-  }
-
-  if (st.step === 'btn_url') {
-    const url = text.trim();
-    if (!/^https?:\/\/[^\s]+\.[^\s]+$/i.test(url) && !/^tg:\/\/[^\s]+$/i.test(url)) {
-      return send(ctx.chatId, '⚠️ رابط غير صالح. يجب أن يبدأ بـ https:// أو http://');
-    }
-    st.step = 'btn_color';
-    st.url = url;
-    await store.saveUser(uid, u);
-    return send(ctx.chatId, '🎨 اختر <b>لون الزر</b>:', [
-      [btn(COLORS.primary, 'col:primary', 'primary'), btn(COLORS.success, 'col:success', 'success')],
-      [btn(COLORS.danger, 'col:danger', 'danger'), btn(COLORS.default, 'col:default')],
-    ]);
-  }
-
-  return send(ctx.chatId, 'اختر من القائمة 👇', mainMenu());
+function pagePanel(bot, page) {
+  const cmds = Object.entries(bot.commands)
+    .filter(([, pid]) => pid === page.id)
+    .map(([c]) => '/' + c);
+  const text =
+    `${page.id === 'main' ? '🏠' : '📄'} <b>${esc(page.title)}</b>\n\n` +
+    `${R.pageSummary(page)}\n` +
+    `⌨️ الأوامر: ${cmds.length ? cmds.join(' ') : 'لا يوجد'}`;
+  const kb = [
+    [btn('📝 تعديل الرسالة', `pmsg:${bot.id}:${page.id}`, 'primary')],
+    [btn('🔘 الأزرار', `pbt:${bot.id}:${page.id}`, 'primary'), btn('👁 معاينة', `pprev:${bot.id}:${page.id}`, 'success')],
+    [btn('✏️ تغيير الاسم', `pren:${bot.id}:${page.id}`), btn('⌨️ ربط بأمر', `cpg:${bot.id}:${page.id}`)],
+  ];
+  if (page.id !== 'main') kb.push([btn('🗑 حذف الصفحة', `pdel:${bot.id}:${page.id}`, 'danger')]);
+  kb.push([btn('🔙 رجوع', `pgs:${bot.id}`)]);
+  return { text, kb };
 }
 
-async function onCallback(ctx) {
-  const { q, uid } = ctx;
-  const d = q.data || '';
-  const u = await store.getUser(uid);
-  const [act, a, b] = d.split(':');
+const typeIcon = (t) => ({ url: '🔗', page: '📄', copy: '📋', webapp: '🌐' }[t || 'url']);
 
-  if (act === 'menu') {
-    u.state = null;
-    await store.saveUser(uid, u);
-    return show(ctx, WELCOME, mainMenu());
-  }
-  if (act === 'help') return show(ctx, HELP, [[btn('🔙 رجوع', 'menu')]]);
-
-  if (act === 'new') {
-    u.state = { step: 'token' };
-    await store.saveUser(uid, u);
-    return show(
-      ctx,
-      '🔑 أرسل الآن <b>توكن البوت</b> الذي أنشأته من @BotFather.\n\nسأحذف رسالتك فور التحقق منه لحمايته.',
-      [[btn('إلغاء', 'menu')]]
-    );
-  }
-
-  if (act === 'list') {
-    u.state = null;
-    await store.saveUser(uid, u);
-    const mine = await store.botsOf(uid);
-    if (!mine.length) {
-      return show(ctx, 'لا توجد لديك بوتات بعد.', [
-        [btn('➕ إنشاء بوت جديد', 'new', 'success')],
-        [btn('🔙 رجوع', 'menu')],
-      ]);
-    }
-    const kb = mine.map((x) => [btn(`🤖 @${x.username}`, `b:${x.id}`, 'primary')]);
-    kb.push([btn('🔙 رجوع', 'menu')]);
-    return show(ctx, '🤖 <b>بوتاتك</b>\nاختر بوتًا لإدارته:', kb);
-  }
-
-  // كل ما يلي يتعلق ببوت معيّن
-  if (['b', 'msg', 'btns', 'badd', 'bdel', 'prev', 'del', 'delok'].includes(act)) {
-    const bot = await ownedBot(uid, a);
-    if (!bot) return show(ctx, '❌ البوت غير موجود.', [[btn('🔙 رجوع', 'list')]]);
-
-    if (act === 'b') {
-      u.state = null;
-      await store.saveUser(uid, u);
-      return showPanel(ctx, bot);
-    }
-    if (act === 'msg') {
-      u.state = { step: 'message', botId: bot.id };
-      await store.saveUser(uid, u);
-      return show(ctx, '📝 أرسل الآن الرسالة التي تريدها (تُحفظ كما هي بالتنسيق والروابط).', [
-        [btn('إلغاء', `b:${bot.id}`)],
-      ]);
-    }
-    if (act === 'btns') {
-      u.state = null;
-      await store.saveUser(uid, u);
-      const p = buttonsPanel(bot);
-      return show(ctx, p.text, p.kb);
-    }
-    if (act === 'badd') {
-      if (bot.buttons.length >= MAX_BUTTONS) return;
-      u.state = { step: 'btn_text', botId: bot.id };
-      await store.saveUser(uid, u);
-      return show(ctx, '✏️ أرسل <b>نص الزر</b> (حتى 40 حرفًا).', [[btn('إلغاء', `btns:${bot.id}`)]]);
-    }
-    if (act === 'bdel') {
-      const i = Number(b);
-      if (Number.isInteger(i) && bot.buttons[i]) bot.buttons.splice(i, 1);
-      await store.saveBot(bot);
-      const p = buttonsPanel(bot);
-      return show(ctx, p.text, p.kb);
-    }
-    if (act === 'prev') {
-      if (!bot.message) {
-        return tg.call(main(), 'answerCallbackQuery', {
-          callback_query_id: q.id,
-          text: 'حدّد الرسالة أولًا',
-          show_alert: true,
-        });
-      }
-      await sendStored(main(), ctx.chatId, bot);
-      return;
-    }
-    if (act === 'del') {
-      return show(ctx, `⚠️ هل تريد حذف <b>@${esc(bot.username)}</b> نهائيًا؟`, [
-        [btn('✅ نعم، احذف', `delok:${bot.id}`, 'danger'), btn('إلغاء', `b:${bot.id}`)],
-      ]);
-    }
-    if (act === 'delok') {
-      try {
-        await tg.call(decrypt(bot.tokenEnc), 'deleteWebhook', { drop_pending_updates: true });
-      } catch (_) {}
-      await store.delBot(bot);
-      return show(ctx, '🗑 تم حذف البوت.', [[btn('🔙 رجوع', 'list')]]);
-    }
-  }
-
-  // اختيار لون زر جديد
-  if (act === 'col') {
-    const st = u.state;
-    if (!st || st.step !== 'btn_color' || !COLORS[a]) return;
-    const bot = await ownedBot(uid, st.botId);
-    if (!bot) return;
-    if (bot.buttons.length < MAX_BUTTONS) {
-      bot.buttons.push({ text: st.text, url: st.url, style: a });
-      await store.saveBot(bot);
-    }
-    u.state = null;
-    await store.saveUser(uid, u);
-    const p = buttonsPanel(bot);
-    return show(ctx, `✅ تمت إضافة الزر.\n\n${p.text}`, p.kb);
-  }
+function buttonsPanel(bot, page) {
+  const lines = page.buttons.length
+    ? page.buttons
+        .map((b, i) => `${i + 1}. ${typeIcon(b.type)} ${COLORS[b.style || 'default'].slice(0, 2)} ${esc(b.text)}${b.newRow === false ? ' ↔️' : ''}`)
+        .join('\n')
+    : 'لا توجد أزرار بعد.';
+  const kb = [];
+  if (page.buttons.length < MAX_BUTTONS) kb.push([btn('➕ إضافة زر', `pbadd:${bot.id}:${page.id}`, 'success')]);
+  page.buttons.forEach((b, i) => kb.push([btn(`${i + 1}. ${b.text}`, `pbd:${bot.id}:${page.id}:${i}`)]));
+  kb.push([btn('🔙 رجوع', `pg:${bot.id}:${page.id}`)]);
+  return {
+    text: `🔘 <b>أزرار «${esc(page.title)}»</b> (${page.buttons.length}/${MAX_BUTTONS})\n\n${lines}\n\n↔️ = في نفس صف الزر السابق`,
+    kb,
+  };
 }
 
-async function handle(update) {
-  if (update.message && update.message.chat && update.message.chat.type === 'private') {
-    const msg = update.message;
-    return onMessage({ msg, uid: msg.from.id, chatId: msg.chat.id });
-  }
-  if (update.callback_query) {
-    const q = update.callback_query;
-    tg.call(main(), 'answerCallbackQuery', { callback_query_id: q.id }).catch(() => {});
-    if (!q.message) return;
-    return onCallback({ q, uid: q.from.id, chatId: q.message.chat.id });
-  }
+function buttonDetail(bot, page, i) {
+  const b = page.buttons[i];
+  let target = '';
+  if (b.type === 'page') target = `→ ${esc((bot.pages[b.page] || { title: '⚠️ محذوفة' }).title)}`;
+  else if (b.type === 'copy') target = `📋 ${esc(String(b.value).slice(0, 60))}`;
+  else target = esc(b.url || '');
+  const base = `pbd:${bot.id}:${page.id}:${i}`;
+  const id = `${bot.id}:${page.id}:${i}`;
+  return {
+    text: `🔘 <b>${esc(b.text)}</b>\nالنوع: ${BTN_TYPES[b.type || 'url']}\n${target}\nاللون: ${COLORS[b.style || 'default']}\nالصف: ${b.newRow === false ? 'مع السابق ↔️' : 'صف مستقل'}`,
+    kb: [
+      [btn('⬆️', `pbmv:${id}:u`), btn('⬇️', `pbmv:${id}:d`), btn(b.newRow === false ? '↕️ صف مستقل' : '↔️ مع السابق', `pbrow:${id}`)],
+      [btn('🎨 تغيير اللون', `pbcol:${id}`)],
+      [btn('🗑 حذف الزر', `pbdel:${id}`, 'danger')],
+      [btn('🔙 رجوع', `pbt:${bot.id}:${page.id}`)],
+    ],
+    base,
+  };
 }
 
-module.exports = { handle };
+function settingsPanel(bot) {
+  const s = bot.settings;
+  const on = (v) => (v ? '✅' : '❌');
+  return {
+    text:
+      `⚙️ <b>إعدادات @${esc(bot.username)}</b>\n\n` +
+      `📨 وضع التواصل: ${on(s.feedback)} — رسائل المستخدمين تصلك هنا ويمكنك الرد عليها\n` +
+      `🔒 منع إعادة التوجيه والحفظ: ${on(s.protect)}\n` +
+      `📢 الاشتراك الإجباري: ${(s.forceSub || []).length ? `${s.forceSub.length} قناة` : '❌'}`,
+    kb: [
+      [btn(`${on(s.feedback)} وضع التواصل`, `tg:${bot.id}:feedback`)],
+      [btn(`${on(s.protect)} منع الحفظ والتوجيه`, `tg:${bot.id}:protect`)],
+      [btn('📢 الاشتراك الإجباري', `fs:${bot.id}`, 'primary')],
+      [btn('🔙 رجوع', `b:${bot.id}`)],
+    ],
+  };
+}
+
+function forcePanel(bot) {
+  const list = bot.settings.forceSub || [];
+  const lines = list.length ? list.map((c, i) => `${i + 1}. ${esc(c.title || c.chat)}`).join('\n') : 'لا توجد قنوات.';
+  const kb = [];
+  if (list.length < MAX_FORCE) kb.push([btn('➕ إضافة قناة', `fsadd:${bot.id}`, 'success')]);
+  list.forEach((c, i) => kb.push([btn(`🗑 ${c.title || c.chat}`, `fsdel:${bot.id}:${i}`, 'danger')]));
+  kb.push([btn('🔙 رجوع', `set:${bot.id}`)]);
+  return {
+    text:
+      `📢 <b>الاشتراك الإجباري</b>\n\n${lines}\n\n` +
+      'يجب أن يكون <b>بوتك مشرفًا</b> في القناة ليتمكن من فحص الاشتراك.',
+    kb,
+  };
+}
+
+function commandsPanel(bot) {
+  const entries = Object.entries(bot.commands);
+  const lines = entries.map(([c, pid]) => `/${c} ← ${esc((bot.pages[pid] || { title: '⚠️' }).title)}`).join('\n');
+  const kb = [[btn('➕ أمر جديد', `cadd:${bot.id}`, 'success')]];
+  entries.forEach(([c], i) => {
+    if (c !== 'start') kb.push([btn(`🗑 /${c}`, `cdel:${bot.id}:${i}`, 'danger')]);
+  });
+  kb.push([btn('🔙 رجوع', `b:${bot.id}`)]);
+  return { text: `⌨️ <b>الأوامر</b>\n\n${lines}`, kb };
+}
+
+async function statsPanel(bot) {
+  const [s, c] = await Promise.all([store.subStats(bot.id), store.getStats(bot.id)]);
+  return {
+    text:
+      `📊 <b>إحصائيات @${esc(bot.username)}</b>\n\n` +
+      `👥 المشتركون: ${s.total} (نشطون ${s.active} • حاظرون ${s.blocked})\n` +
+      `🆕 جدد خلال 24 ساعة: ${s.today}\n` +
+      `📅 جدد خلال 7 أيام: ${s.week}\n\n` +
+      `👁 مشاهدات الصفحات: ${c.views || 0}\n` +
+      `👆 ضغطات الأزرار: ${c.clicks || 0}\n` +
+      `📩 رسائل التواصل: ${c.feedback || 0}`,
+    kb: [[btn('🔄 تحديث', `st:${bot.id}`)], [btn('🔙 رجوع', `b:${bot.id}`)]],
+  };
+}
