@@ -1,56 +1,53 @@
 'use strict';
-// تخزين دائم عبر Upstash Redis (REST) - بدون أي اعتماديات
-const endpoint = () => process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-const authToken = () => process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+// تخزين دائم عبر MongoDB (Atlas)
+const { MongoClient } = require('mongodb');
 
-async function cmd(...args) {
-  const res = await fetch(endpoint(), {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${authToken()}`, 'content-type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error('Redis: ' + data.error);
-  return data.result;
+let clientPromise = global._mongoClientPromise;
+
+function db() {
+  if (!clientPromise) {
+    const client = new MongoClient(process.env.MONGODB_URI, { maxPoolSize: 5 });
+    clientPromise = global._mongoClientPromise = client.connect();
+  }
+  return clientPromise.then((c) => c.db(process.env.MONGODB_DB || 'botmaker'));
 }
-
-const parse = (v) => (v ? JSON.parse(v) : null);
+const col = async (name) => (await db()).collection(name);
 
 async function getUser(uid) {
-  return parse(await cmd('GET', `u:${uid}`)) || { state: null, createdAt: Date.now() };
+  const d = await (await col('users')).findOne({ _id: String(uid) });
+  return d ? d.data : { state: null, createdAt: Date.now() };
 }
 async function saveUser(uid, u) {
-  await Promise.all([cmd('SET', `u:${uid}`, JSON.stringify(u)), cmd('SADD', 'users', String(uid))]);
+  await (await col('users')).updateOne({ _id: String(uid) }, { $set: { data: u } }, { upsert: true });
 }
 
 async function getBot(id) {
-  return parse(await cmd('GET', `b:${id}`));
+  const d = await (await col('bots')).findOne({ _id: String(id) });
+  return d ? d.data : null;
 }
 async function saveBot(bot) {
-  await Promise.all([
-    cmd('SET', `b:${bot.id}`, JSON.stringify(bot)),
-    cmd('SADD', 'bots', bot.id),
-    cmd('SADD', `ub:${bot.owner}`, bot.id),
-  ]);
+  await (await col('bots')).updateOne(
+    { _id: String(bot.id) },
+    { $set: { data: bot, owner: String(bot.owner) } },
+    { upsert: true }
+  );
 }
 async function delBot(bot) {
-  await Promise.all([
-    cmd('DEL', `b:${bot.id}`),
-    cmd('SREM', 'bots', bot.id),
-    cmd('SREM', `ub:${bot.owner}`, bot.id),
-  ]);
+  await (await col('bots')).deleteOne({ _id: String(bot.id) });
 }
 async function botsOf(uid) {
-  const ids = await cmd('SMEMBERS', `ub:${uid}`);
-  if (!ids || !ids.length) return [];
-  const vals = await cmd('MGET', ...ids.map((i) => `b:${i}`));
-  return vals.map(parse).filter(Boolean);
+  const docs = await (await col('bots')).find({ owner: String(uid) }).toArray();
+  return docs.map((d) => d.data).filter(Boolean);
 }
 async function allBotIds() {
-  return (await cmd('SMEMBERS', 'bots')) || [];
+  const docs = await (await col('bots')).find({}, { projection: { _id: 1 } }).toArray();
+  return docs.map((d) => d._id);
 }
 async function counts() {
-  const [users, bots] = await Promise.all([cmd('SCARD', 'users'), cmd('SCARD', 'bots')]);
+  const [users, bots] = await Promise.all([
+    (await col('users')).countDocuments(),
+    (await col('bots')).countDocuments(),
+  ]);
   return { users, bots };
 }
 
