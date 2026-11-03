@@ -1,6 +1,6 @@
 'use strict';
 // طبقة التخزين الدائم عبر MongoDB (Atlas)
-// المجموعات: users | bots | subs | refs | settings
+// المجموعات: users | bots | subs | refs | settings | cstate
 const { MongoClient } = require('mongodb');
 
 let clientPromise = global._mongoClientPromise;
@@ -62,9 +62,10 @@ function normalizeBot(b) {
   if (!b.pages.main) b.pages.main = newPage('main', 'الرئيسية');
   b.commands = Object.assign({ start: 'main', ms: 'main' }, b.commands);
   b.settings = Object.assign(
-    { forceSub: [], feedback: false, welcomeOnce: false, protect: false },
+    { forceSub: [], feedback: false, welcomeOnce: false, protect: false, admins: [] },
     b.settings
   );
+  b.rkb = Array.isArray(b.rkb) ? b.rkb : []; // أزرار الكيبورد السفلي: { id, text, page, newRow }
   b.v = 2;
   return b;
 }
@@ -107,6 +108,7 @@ async function saveBot(bot) {
 async function delBot(bot) {
   await (await col('bots')).deleteOne({ _id: String(bot.id) });
   await (await col('subs')).deleteMany({ bot: String(bot.id) });
+  await (await col('cstate')).deleteMany({ _id: { $regex: '^' + String(bot.id) + ':' } });
 }
 async function botsOf(uid) {
   const docs = await (await col('bots')).find({ owner: String(uid) }).toArray();
@@ -178,6 +180,17 @@ async function getStats(botId) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  حالة المشرف داخل البوت الابن (وضع الكيبورد + الخطوة الجارية)         */
+/* ------------------------------------------------------------------ */
+async function getCState(botId, uid) {
+  const d = await (await col('cstate')).findOne({ _id: `${botId}:${uid}` });
+  return d && d.data ? d.data : { mode: 'main', step: null };
+}
+async function saveCState(botId, uid, s) {
+  await (await col('cstate')).updateOne({ _id: `${botId}:${uid}` }, { $set: { data: s } }, { upsert: true });
+}
+
+/* ------------------------------------------------------------------ */
 /*  الإحالات                                                           */
 /* ------------------------------------------------------------------ */
 // يعيد true إذا سُجّلت الإحالة لأول مرة
@@ -238,6 +251,8 @@ module.exports = {
   subStats,
   incStat,
   getStats,
+  getCState,
+  saveCState,
   addRef,
   refCount,
   getSettings,
