@@ -12,8 +12,7 @@ const baseUrl = () =>
 
 function missingEnv() {
   const m = REQUIRED.filter((k) => !process.env[k]);
-  if (!(process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL)) m.push('UPSTASH_REDIS_REST_URL');
-  if (!(process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN)) m.push('UPSTASH_REDIS_REST_TOKEN');
+  if (!process.env.MONGODB_URI) m.push('MONGODB_URI');
   return m;
 }
 
