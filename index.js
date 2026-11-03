@@ -23,7 +23,7 @@ async function setup(req, res) {
   await tg.call(main, 'setWebhook', {
     url: `${baseUrl()}/webhook/main`,
     secret_token: secretFor('main'),
-    allowed_updates: ['message', 'callback_query', 'pre_checkout_query'],
+    allowed_updates: ['message', 'callback_query', 'pre_checkout_query', 'managed_bot'],
   });
   await tg
     .call(main, 'setMyCommands', {
