@@ -9,7 +9,8 @@ const MAX_BUTTONS = 6;
 const TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 
 const main = () => process.env.MAIN_BOT_TOKEN;
-const baseUrl = () => String(process.env.BASE_URL).replace(/\/+$/, '');
+const baseUrl = () =>
+  String(process.env.BASE_URL || `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`).replace(/\/+$/, '');
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const btn = (text, data, style) => styled({ text, callback_data: data }, style);
 
@@ -90,8 +91,8 @@ function buttonsPanel(bot) {
 }
 
 /* ---------- المنطق ---------- */
-function ownedBot(uid, id) {
-  const b = store.db.bots[id];
+async function ownedBot(uid, id) {
+  const b = await store.getBot(id);
   return b && b.owner === uid ? b : null;
 }
 
@@ -118,12 +119,12 @@ async function createBot(ctx, token) {
     return;
   }
   const id = String(me.id);
-  const existing = store.db.bots[id];
+  const existing = await store.getBot(id);
   if (existing && existing.owner !== ctx.uid) {
     await send(ctx.chatId, '❌ هذا البوت مسجّل لدى مستخدم آخر.', [[btn('🔙 القائمة', 'menu')]]);
     return;
   }
-  const count = Object.values(store.db.bots).filter((b) => b.owner === ctx.uid).length;
+  const count = (await store.botsOf(ctx.uid)).length;
   if (!existing && count >= MAX_BOTS_PER_USER) {
     await send(ctx.chatId, `❌ وصلت للحد الأقصى (${MAX_BOTS_PER_USER} بوتات).`, [[btn('🔙 القائمة', 'menu')]]);
     return;
@@ -154,9 +155,10 @@ async function createBot(ctx, token) {
   bot.username = me.username;
   bot.name = me.first_name;
   bot.tokenEnc = encrypt(token);
-  store.db.bots[id] = bot;
-  store.user(ctx.uid).state = { step: 'message', botId: id };
-  store.save();
+  await store.saveBot(bot);
+  const u0 = await store.getUser(ctx.uid);
+  u0.state = { step: 'message', botId: id };
+  await store.saveUser(ctx.uid, u0);
 
   await send(
     ctx.chatId,
@@ -168,19 +170,17 @@ async function createBot(ctx, token) {
 async function onMessage(ctx) {
   const { msg, uid } = ctx;
   const text = msg.text || '';
-  const u = store.user(uid);
+  const u = await store.getUser(uid);
 
   if (/^\/start(@\w+)?(\s|$)/.test(text) || /^\/menu(@\w+)?(\s|$)/.test(text)) {
     u.state = null;
-    store.save();
+    await store.saveUser(uid, u);
     return send(ctx.chatId, WELCOME, mainMenu());
   }
 
   if (text === '/stats' && String(uid) === String(process.env.ADMIN_ID || '')) {
-    return send(
-      ctx.chatId,
-      `👥 المستخدمون: ${Object.keys(store.db.users).length}\n🤖 البوتات: ${Object.keys(store.db.bots).length}`
-    );
+    const c = await store.counts();
+    return send(ctx.chatId, `👥 المستخدمون: ${c.users}\n🤖 البوتات: ${c.bots}`);
   }
 
   const st = u.state;
@@ -191,13 +191,14 @@ async function onMessage(ctx) {
   }
 
   if (st.step === 'message') {
-    const bot = ownedBot(uid, st.botId);
+    const bot = await ownedBot(uid, st.botId);
     if (!bot) return;
     if (!msg.text) return send(ctx.chatId, '⚠️ أرسل الرسالة كنص (يدعم التنسيق والروابط).');
     if (msg.text.length > 4096) return send(ctx.chatId, '⚠️ الرسالة أطول من 4096 حرفًا.');
     bot.message = { text: msg.text, entities: msg.entities || [] };
+    await store.saveBot(bot);
     u.state = null;
-    store.save();
+    await store.saveUser(uid, u);
     await send(ctx.chatId, '✅ تم حفظ الرسالة.');
     return showPanel(ctx, bot);
   }
@@ -206,7 +207,7 @@ async function onMessage(ctx) {
     if (!msg.text || msg.text.length > 40) return send(ctx.chatId, '⚠️ أرسل نص الزر (حتى 40 حرفًا).');
     st.step = 'btn_url';
     st.text = msg.text.trim();
-    store.save();
+    await store.saveUser(uid, u);
     return send(ctx.chatId, '🔗 الآن أرسل <b>رابط</b> الزر (يبدأ بـ https:// أو http://).', [
       [btn('إلغاء', `btns:${st.botId}`)],
     ]);
@@ -219,7 +220,7 @@ async function onMessage(ctx) {
     }
     st.step = 'btn_color';
     st.url = url;
-    store.save();
+    await store.saveUser(uid, u);
     return send(ctx.chatId, '🎨 اختر <b>لون الزر</b>:', [
       [btn(COLORS.primary, 'col:primary', 'primary'), btn(COLORS.success, 'col:success', 'success')],
       [btn(COLORS.danger, 'col:danger', 'danger'), btn(COLORS.default, 'col:default')],
@@ -232,19 +233,19 @@ async function onMessage(ctx) {
 async function onCallback(ctx) {
   const { q, uid } = ctx;
   const d = q.data || '';
-  const u = store.user(uid);
+  const u = await store.getUser(uid);
   const [act, a, b] = d.split(':');
 
   if (act === 'menu') {
     u.state = null;
-    store.save();
+    await store.saveUser(uid, u);
     return show(ctx, WELCOME, mainMenu());
   }
   if (act === 'help') return show(ctx, HELP, [[btn('🔙 رجوع', 'menu')]]);
 
   if (act === 'new') {
     u.state = { step: 'token' };
-    store.save();
+    await store.saveUser(uid, u);
     return show(
       ctx,
       '🔑 أرسل الآن <b>توكن البوت</b> الذي أنشأته من @BotFather.\n\nسأحذف رسالتك فور التحقق منه لحمايته.',
@@ -254,7 +255,8 @@ async function onCallback(ctx) {
 
   if (act === 'list') {
     u.state = null;
-    const mine = Object.values(store.db.bots).filter((x) => x.owner === uid);
+    await store.saveUser(uid, u);
+    const mine = await store.botsOf(uid);
     if (!mine.length) {
       return show(ctx, 'لا توجد لديك بوتات بعد.', [
         [btn('➕ إنشاء بوت جديد', 'new', 'success')],
@@ -268,37 +270,37 @@ async function onCallback(ctx) {
 
   // كل ما يلي يتعلق ببوت معيّن
   if (['b', 'msg', 'btns', 'badd', 'bdel', 'prev', 'del', 'delok'].includes(act)) {
-    const bot = ownedBot(uid, a);
+    const bot = await ownedBot(uid, a);
     if (!bot) return show(ctx, '❌ البوت غير موجود.', [[btn('🔙 رجوع', 'list')]]);
 
     if (act === 'b') {
       u.state = null;
-      store.save();
+      await store.saveUser(uid, u);
       return showPanel(ctx, bot);
     }
     if (act === 'msg') {
       u.state = { step: 'message', botId: bot.id };
-      store.save();
+      await store.saveUser(uid, u);
       return show(ctx, '📝 أرسل الآن الرسالة التي تريدها (تُحفظ كما هي بالتنسيق والروابط).', [
         [btn('إلغاء', `b:${bot.id}`)],
       ]);
     }
     if (act === 'btns') {
       u.state = null;
-      store.save();
+      await store.saveUser(uid, u);
       const p = buttonsPanel(bot);
       return show(ctx, p.text, p.kb);
     }
     if (act === 'badd') {
       if (bot.buttons.length >= MAX_BUTTONS) return;
       u.state = { step: 'btn_text', botId: bot.id };
-      store.save();
+      await store.saveUser(uid, u);
       return show(ctx, '✏️ أرسل <b>نص الزر</b> (حتى 40 حرفًا).', [[btn('إلغاء', `btns:${bot.id}`)]]);
     }
     if (act === 'bdel') {
       const i = Number(b);
       if (Number.isInteger(i) && bot.buttons[i]) bot.buttons.splice(i, 1);
-      store.save();
+      await store.saveBot(bot);
       const p = buttonsPanel(bot);
       return show(ctx, p.text, p.kb);
     }
@@ -322,8 +324,7 @@ async function onCallback(ctx) {
       try {
         await tg.call(decrypt(bot.tokenEnc), 'deleteWebhook', { drop_pending_updates: true });
       } catch (_) {}
-      delete store.db.bots[bot.id];
-      store.save();
+      await store.delBot(bot);
       return show(ctx, '🗑 تم حذف البوت.', [[btn('🔙 رجوع', 'list')]]);
     }
   }
@@ -332,13 +333,14 @@ async function onCallback(ctx) {
   if (act === 'col') {
     const st = u.state;
     if (!st || st.step !== 'btn_color' || !COLORS[a]) return;
-    const bot = ownedBot(uid, st.botId);
+    const bot = await ownedBot(uid, st.botId);
     if (!bot) return;
     if (bot.buttons.length < MAX_BUTTONS) {
       bot.buttons.push({ text: st.text, url: st.url, style: a });
+      await store.saveBot(bot);
     }
     u.state = null;
-    store.save();
+    await store.saveUser(uid, u);
     const p = buttonsPanel(bot);
     return show(ctx, `✅ تمت إضافة الزر.\n\n${p.text}`, p.kb);
   }
