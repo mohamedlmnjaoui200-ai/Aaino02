@@ -1,6 +1,7 @@
 'use strict';
 // عرض الصفحات: نص/وسائط + أزرار (روابط، صفحات، نسخ، تطبيق مصغّر) + متغيّرات
 const tg = require('./telegram');
+const { decrypt } = require('./crypto');
 
 const main = () => process.env.MAIN_BOT_TOKEN;
 
@@ -183,7 +184,15 @@ async function sendPage(token, chatId, bot, page, o = {}) {
   const send = (file) => tg.call(token, def.method, Object.assign({}, p, { [m.media.type]: file }));
 
   // معاينة عبر بوت الصانع نفسه: file_id الخاص به صالح
-  if (o.preview) return { result: await send(m.media.mainId), cached: false };
+  if (o.preview) {
+    // وسائط ضُبطت من داخل البوت الابن: file_id خاص بذلك البوت، فنرفعها برابط الملف
+    if (m.media.origin === 'child') {
+      const ct = decrypt(bot.tokenEnc);
+      const f = await tg.call(ct, 'getFile', { file_id: m.media.mainId });
+      return { result: await send(`https://api.telegram.org/file/bot${ct}/${f.file_path}`), cached: false };
+    }
+    return { result: await send(m.media.mainId), cached: false };
+  }
 
   // البوت الابن: استخدم file_id المخزّن له إن وُجد
   const fid = m.media.fids && m.media.fids[bot.id];
