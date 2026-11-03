@@ -23,7 +23,7 @@ async function setup(req, res) {
   await tg.call(main, 'setWebhook', {
     url: `${baseUrl()}/webhook/main`,
     secret_token: secretFor('main'),
-    allowed_updates: ['message', 'callback_query'],
+    allowed_updates: ['message', 'callback_query', 'pre_checkout_query'],
   });
   await tg
     .call(main, 'setMyCommands', {
@@ -44,7 +44,7 @@ async function setup(req, res) {
         await tg.call(decrypt(bot.tokenEnc), 'setWebhook', {
           url: `${baseUrl()}/webhook/child/${bot.id}`,
           secret_token: secretFor(`child:${bot.id}`),
-          allowed_updates: ['message'],
+          allowed_updates: ['message', 'callback_query', 'my_chat_member'],
         });
         done++;
       } catch (e) {
@@ -78,6 +78,10 @@ module.exports = async (req, res) => {
     if (route === 'main') {
       if (header !== secretFor('main')) return res.status(403).end();
       // ننتظر انتهاء المعالجة قبل الرد (Vercel يجمّد التنفيذ بعد الرد)
+      if (typeof maker.handle !== 'function') {
+        console.error('maker.handle غير معرّف: تأكد أن maker.js يصدّر handle');
+        return res.status(200).end();
+      }
       await maker.handle(req.body).catch((e) => console.error('maker error:', e.message));
       return res.status(200).end();
     }
