@@ -1,8 +1,9 @@
 {
   "name": "telegram-bot-maker",
-  "version": "2.0.0",
-  "description": "صانع بوتات تيليجرام - نسخة Vercel + Upstash Redis",
+  "version": "2.1.0",
+  "description": "صانع بوتات تيليجرام - Vercel + MongoDB",
   "private": true,
   "engines": { "node": ">=18" },
+  "dependencies": { "mongodb": "^6.8.0" },
   "license": "MIT"
 }
