@@ -3,11 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "description": "Invite-only Telegram Mini App AI assistant API (Express + Azure SQL + Ollama)",
-  "main": "backend/server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node backend/server.js",
-    "dev": "node --watch backend/server.js",
-    "kb:import": "node scripts/import-kb.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "engines": { "node": ">=20" },
   "dependencies": {
