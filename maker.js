@@ -139,7 +139,8 @@ async function botPanel(bot) {
     `📄 الصفحات: ${Object.keys(bot.pages).length}\n` +
     `👥 المشتركون: ${s.active}${s.blocked ? ` (حاظرون: ${s.blocked})` : ''}\n` +
     `📝 الرئيسية: ${bot.pages.main.message ? '✅ محفوظة' : '❌ غير محددة'}\n\n` +
-    'اكتب <code>/start</code> في البوت لعرض الصفحة الرئيسية.';
+    'اكتب <code>/start</code> في البوت لعرض الصفحة الرئيسية.\n' +
+    '💡 اكتب <code>/admin</code> داخل بوتك لإدارته من هناك (محرر الأزرار والمحتوى والبث).';
   const kb = [
     [btn('📄 الصفحات والقوائم', `pgs:${bot.id}`, 'primary')],
     [btn('⌨️ الأوامر', `cmds:${bot.id}`), btn('⚙️ الإعدادات', `set:${bot.id}`)],
@@ -1015,6 +1016,7 @@ async function onBotAction(ctx, u, bot, parts) {
     case 'pdelok': {
       if (page.id === 'main') return;
       delete bot.pages[page.id];
+      bot.rkb = (bot.rkb || []).filter((b) => b.page !== page.id);
       Object.values(bot.pages).forEach((p) => {
         p.buttons = (p.buttons || []).filter((b) => !(b.type === 'page' && b.page === page.id));
       });
