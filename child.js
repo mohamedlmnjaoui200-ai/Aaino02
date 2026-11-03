@@ -3,6 +3,7 @@ const tg = require('./telegram');
 const store = require('./store');
 const { decrypt } = require('./crypto');
 const { sendPage, showPage, extractMessage, MEDIA } = require('./render');
+const admin = require('./admin');
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const MEMBER_OK = ['creator', 'administrator', 'member', 'restricted'];
@@ -144,6 +145,10 @@ async function onMessage(bot, token, msg) {
   if (m) {
     const cmd = m[1].toLowerCase();
     const payload = (m[2] || '').trim();
+    // أوامر المشرف داخل البوت: /admin و /cancel
+    if (isPrivate && msg.from && (cmd === 'admin' || cmd === 'cancel') && admin.isAdmin(bot, msg.from.id)) {
+      return admin.command(bot, token, msg, cmd);
+    }
     let pageId = bot.commands[cmd];
 
     // رابط عميق: /start p_<معرّف الصفحة> يفتح صفحة محددة
@@ -152,7 +157,16 @@ async function onMessage(bot, token, msg) {
     }
     if (!pageId || !bot.pages[pageId]) return;
     if (isPrivate && !(await gate(token, bot, msg.chat.id, msg.from.id))) return;
-    return deliver(token, bot, msg.chat.id, bot.pages[pageId], msg.from);
+    await deliver(token, bot, msg.chat.id, bot.pages[pageId], msg.from);
+    // الكيبورد السفلي (أزرار القائمة + أزرار الإدارة للمشرف)
+    if (isPrivate && cmd === 'start' && msg.from) await admin.showMenu(bot, token, msg.chat.id, msg.from.id);
+    return;
+  }
+
+  // ضغطات الكيبورد السفلي ورسائل المشرف (محرر الأزرار، المحتوى، البث...)
+  if (isPrivate && msg.from) {
+    const handled = await admin.onMessage(bot, token, msg, { deliver, gate });
+    if (handled) return;
   }
 
   // رسالة عادية في الخاص: تُمرَّر للمالك إن كان وضع التواصل مفعّلًا
@@ -176,6 +190,8 @@ async function onCallback(bot, token, q) {
   if (!q.message) return answer();
   const chatId = q.message.chat.id;
   const d = q.data || '';
+
+  if (d.startsWith('a:')) return admin.onCallback(bot, token, q);
 
   if (d === 'chk') {
     const miss = await missingChannels(token, q.from.id, bot.settings.forceSub);
