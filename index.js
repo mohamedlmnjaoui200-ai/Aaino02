@@ -1,9 +1,9 @@
 'use strict';
-const tg = require('../src/telegram');
-const store = require('../src/store');
-const maker = require('../src/maker');
-const child = require('../src/child');
-const { decrypt, secretFor } = require('../src/crypto');
+const tg = require('./telegram');
+const store = require('./store');
+const maker = require('./maker');
+const child = require('./child');
+const { decrypt, secretFor } = require('./crypto');
 
 const REQUIRED = ['MAIN_BOT_TOKEN', 'ENCRYPTION_KEY', 'WEBHOOK_SECRET'];
 
