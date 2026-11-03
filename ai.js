@@ -6,14 +6,20 @@ const OLLAMA = () => process.env.OLLAMA_URL || "http://localhost:11434";
 const MODEL = () => process.env.MODEL || "qwen2.5-coder:32b";
 
 async function ollama(messages, timeout) {
-  const r = await fetch(OLLAMA() + "/api/chat", {
-    method: "POST",
-    signal: AbortSignal.timeout(timeout || Number(process.env.OLLAMA_TIMEOUT_MS) || 180000),
-    headers: { "content-type": "application/json", ...(process.env.OLLAMA_API_KEY ? { Authorization: "Bearer " + process.env.OLLAMA_API_KEY } : {}) },
-    body: JSON.stringify({ model: MODEL(), stream: false, messages }),
-  });
-  if (!r.ok) throw new Error("Ollama " + r.status);
-  return ((await r.json()).message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  const t = AbortSignal.timeout(timeout || Number(process.env.OLLAMA_TIMEOUT_MS) || 180000);
+  const key = process.env.LLM_API_KEY || process.env.OLLAMA_API_KEY;
+  const headers = { "content-type": "application/json", ...(key ? { Authorization: "Bearer " + key } : {}) };
+  let text;
+  if (process.env.LLM_API_URL) {   // خدمة جاهزة متوافقة مع OpenAI (Groq, OpenRouter, Together...)
+    const r = await fetch(process.env.LLM_API_URL.replace(/\/$/, "") + "/chat/completions", { method: "POST", signal: t, headers, body: JSON.stringify({ model: MODEL(), messages }) });
+    if (!r.ok) throw new Error("LLM " + r.status + " " + (await r.text()).slice(0, 200));
+    text = (await r.json()).choices?.[0]?.message?.content;
+  } else {                          // Ollama على سيرفرك
+    const r = await fetch(OLLAMA() + "/api/chat", { method: "POST", signal: t, headers, body: JSON.stringify({ model: MODEL(), stream: false, messages }) });
+    if (!r.ok) throw new Error("Ollama " + r.status);
+    text = (await r.json()).message?.content;
+  }
+  return (text || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
 const SYSTEM = `أنت مساعد تقني خبير داخل تطبيق مصغّر. أجب بالعربية الواضحة، وأبقِ المصطلحات التقنية والأكواد بالإنجليزية.
