@@ -183,6 +183,28 @@ async function subStats(botId) {
 async function incStat(botId, key, n = 1) {
   await (await col('bots')).updateOne({ _id: String(botId) }, { $inc: { [`stats.${key}`]: n } });
 }
+// يزيد عدة عدّادات في عملية واحدة
+async function incStats(botId, keys) {
+  const inc = {};
+  keys.forEach((k) => (inc[`stats.${k}`] = 1));
+  await (await col('bots')).updateOne({ _id: String(botId) }, { $inc: inc });
+}
+// عدد المنضمين الجدد في كل فترة 24 ساعة خلال آخر days يوم (الأقدم أولًا)
+async function joinsByDay(botId, days) {
+  const DAY = 24 * 3600 * 1000;
+  const since = Date.now() - days * DAY;
+  const rows = await (await col('subs'))
+    .aggregate([
+      { $match: { bot: String(botId), joined: { $gte: since } } },
+      { $group: { _id: { $floor: { $divide: [{ $subtract: ['$joined', since] }, DAY] } }, n: { $sum: 1 } } },
+    ])
+    .toArray();
+  const out = new Array(days).fill(0);
+  rows.forEach((r) => {
+    out[Math.min(days - 1, Math.max(0, r._id))] += r.n;
+  });
+  return out;
+}
 async function getStats(botId) {
   const d = await (await col('bots')).findOne({ _id: String(botId) }, { projection: { stats: 1 } });
   return (d && d.stats) || {};
@@ -354,6 +376,8 @@ module.exports = {
   subsPage,
   subStats,
   incStat,
+  incStats,
+  joinsByDay,
   getStats,
   getCState,
   getUVars,
