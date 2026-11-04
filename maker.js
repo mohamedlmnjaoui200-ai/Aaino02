@@ -5,6 +5,7 @@ const tg = require('./telegram');
 const store = require('./store');
 const { encrypt, decrypt, secretFor } = require('./crypto');
 const R = require('./render');
+const W = require('./wallet');
 const { COLORS, BTN_TYPES, styled, extractMessage, sendPage } = R;
 
 /* ------------------------------------------------------------------ */
@@ -13,17 +14,11 @@ const { COLORS, BTN_TYPES, styled, extractMessage, sendPage } = R;
 const BASE_BOTS = Number(process.env.MAX_BOTS_PER_USER || 10); // الحد الأساسي لكل مستخدم
 const BOTS_CAP = 100; // سقف مطلق
 const REF_SLOTS = Number(process.env.REF_SLOTS || 1); // مساحات إضافية لكل إحالة
-const MAX_BUTTONS = 12; // أزرار لكل صفحة
-const MAX_PAGES = 30; // صفحات لكل بوت
-const MAX_FORCE = 5; // قنوات الاشتراك الإجباري
+const REF_GEMS = Number(process.env.REF_GEMS || 25); // 💎 لكل إحالة ناجحة
+const L = (bot) => W.limitsOf(bot); // حدود البوت بعد ترقياته
 const BC_BUDGET = Number(process.env.BC_BUDGET_MS || 8000); // ميزانية وقت البث في كل مرة
 const TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 const CMD_RE = /^[a-z0-9_]{2,32}$/;
-const PACKS = [
-  { slots: 1, stars: Number(process.env.STARS_1 || 25) },
-  { slots: 3, stars: Number(process.env.STARS_3 || 60) },
-  { slots: 10, stars: Number(process.env.STARS_10 || 180) },
-];
 
 const main = () => process.env.MAIN_BOT_TOKEN;
 const baseUrl = () =>
@@ -92,16 +87,18 @@ function mainMenu() {
   return [
     [btn('➕ إضافة بوت (بالتوكن)', 'new', 'success'), btn('➕ إضافة بوت (تلقائيًا)', 'auto', 'success')],
     [btn('🤖 قائمة البوتات', 'list', 'primary')],
-    [btn('⭐ شراء مساحة بوتات', 'shop'), btn('👥 نظام الإحالة', 'ref')],
+    [btn('💎 المتجر والمحفظة', 'shop', 'primary'), btn('🎁 المكافأة اليومية', 'daily', 'success')],
+    [btn('👥 نظام الإحالة', 'ref'), btn('❓ مساعدة', 'help')],
     [btn('🎩 طلب الإعلان', 'ads'), btn('📞 جهات الاتصال', 'contact')],
-    [btn('❓ مساعدة', 'help')],
   ];
 }
 
 const WELCOME =
   '👋 أهلًا بك في <b>صانع البوتات</b>\n\n' +
   'أنشئ بوت قوائم احترافي في دقيقة: صفحات متعددة، أزرار بالألوان، وسائط، أوامر مخصصة، بث للمشتركين، ' +
-  'اشتراك إجباري، وإحصائيات.\n\nاضغط «إدارة البوتات» للبدء 👇';
+  'اشتراك إجباري، متغيرات وإجراءات، وإحصائيات.\n\n' +
+  '💎 اجمع الجواهر من <b>المكافأة اليومية</b> والإحالات، أو اشحنها بنجوم تيليجرام، ' +
+  'واشترِ بها مساحات بوتات وترقيات تفتح حدودًا أكبر.\n\nاضغط «قائمة البوتات» للبدء 👇';
 
 const HELP =
   '<b>طريقة الاستخدام</b>\n\n' +
@@ -110,7 +107,8 @@ const HELP =
   '3️⃣ أضف أزرارًا: رابط، صفحة داخلية، نسخ نص، أو تطبيق مصغّر.\n' +
   '4️⃣ أنشئ صفحات وأوامر مخصصة (مثل /prices).\n' +
   '5️⃣ فعّل الاشتراك الإجباري أو وضع التواصل من «الإعدادات».\n' +
-  '6️⃣ أرسل بثًا لمشتركي بوتك من «بث رسالة».\n\n' +
+  '6️⃣ أرسل بثًا لمشتركي بوتك من «بث رسالة».\n' +
+  '7️⃣ من «المتجر» اشترِ مساحات وترقيات بالجواهر 💎 (مكافأة يومية + إحالات مجانية).\n\n' +
   '<b>المتغيّرات داخل النص:</b>\n' +
   '<code>{name}</code> الاسم الكامل • <code>{first_name}</code> الاسم الأول • ' +
   '<code>{username}</code> المعرّف • <code>{id}</code> الآيدي • <code>{bot}</code> معرّف البوت\n\n' +
@@ -120,8 +118,8 @@ const HELP =
 /*  الحدود والإحالات                                                    */
 /* ------------------------------------------------------------------ */
 async function botLimit(uid, u) {
-  const refs = await store.refCount(uid);
-  return Math.min(BOTS_CAP, BASE_BOTS + (u.extraSlots || 0) + refs * REF_SLOTS);
+  const [refs, w] = await Promise.all([store.refCount(uid), store.getWallet(uid)]);
+  return Math.min(BOTS_CAP, BASE_BOTS + (u.extraSlots || 0) + (w.slots || 0) + refs * REF_SLOTS);
 }
 
 async function ownedBot(uid, id) {
@@ -138,13 +136,15 @@ async function botPanel(bot) {
     `🤖 <b>${esc(bot.name)}</b> (@${esc(bot.username)})\n\n` +
     `📄 الصفحات: ${Object.keys(bot.pages).length}\n` +
     `👥 المشتركون: ${s.active}${s.blocked ? ` (حاظرون: ${s.blocked})` : ''}\n` +
-    `📝 الرئيسية: ${bot.pages.main.message ? '✅ محفوظة' : '❌ غير محددة'}\n\n` +
+    `📝 الرئيسية: ${bot.pages.main.message ? '✅ محفوظة' : '❌ غير محددة'}\n` +
+    `🏷 الخطة: ${W.planLabel(bot)}\n\n` +
     'اكتب <code>/start</code> في البوت لعرض الصفحة الرئيسية.\n' +
     '💡 اكتب <code>/admin</code> داخل بوتك لإدارته من هناك (محرر الأزرار والمحتوى والبث).';
   const kb = [
     [btn('📄 الصفحات والقوائم', `pgs:${bot.id}`, 'primary')],
     [btn('⌨️ الأوامر', `cmds:${bot.id}`), btn('⚙️ الإعدادات', `set:${bot.id}`)],
     [btn('📢 بث رسالة', `bc:${bot.id}`, 'success'), btn('📊 الإحصائيات', `st:${bot.id}`)],
+    [btn('💎 ترقية البوت', `ub:${bot.id}`, 'primary')],
     [btn('🔑 تغيير التوكن', `rtok:${bot.id}`), btn('🗑 حذف البوت', `del:${bot.id}`, 'danger')],
     [btn('🔙 رجوع', 'list')],
   ];
@@ -160,7 +160,7 @@ function pagesPanel(bot) {
   const kb = Object.values(bot.pages).map((p) => [
     btn(`${p.id === 'main' ? '🏠' : '📄'} ${p.title}  •  ${R.pageSummary(p)}`, `pg:${bot.id}:${p.id}`, p.id === 'main' ? 'primary' : undefined),
   ]);
-  if (Object.keys(bot.pages).length < MAX_PAGES) kb.push([btn('➕ صفحة جديدة', `padd:${bot.id}`, 'success')]);
+  if (Object.keys(bot.pages).length < L(bot).pages) kb.push([btn('➕ صفحة جديدة', `padd:${bot.id}`, 'success')]);
   kb.push([btn('🔙 رجوع', `b:${bot.id}`)]);
   return {
     text: '📄 <b>الصفحات والقوائم</b>\n\nكل صفحة لها رسالة وأزرار. اربط الصفحات ببعضها بزر من نوع «صفحة داخل البوت».',
@@ -195,11 +195,11 @@ function buttonsPanel(bot, page) {
         .join('\n')
     : 'لا توجد أزرار بعد.';
   const kb = [];
-  if (page.buttons.length < MAX_BUTTONS) kb.push([btn('➕ إضافة زر', `pbadd:${bot.id}:${page.id}`, 'success')]);
+  if (page.buttons.length < L(bot).buttons) kb.push([btn('➕ إضافة زر', `pbadd:${bot.id}:${page.id}`, 'success')]);
   page.buttons.forEach((b, i) => kb.push([btn(`${i + 1}. ${b.text}`, `pbd:${bot.id}:${page.id}:${i}`)]));
   kb.push([btn('🔙 رجوع', `pg:${bot.id}:${page.id}`)]);
   return {
-    text: `🔘 <b>أزرار «${esc(page.title)}»</b> (${page.buttons.length}/${MAX_BUTTONS})\n\n${lines}\n\n↔️ = في نفس صف الزر السابق`,
+    text: `🔘 <b>أزرار «${esc(page.title)}»</b> (${page.buttons.length}/${L(bot).buttons})\n\n${lines}\n\n↔️ = في نفس صف الزر السابق`,
     kb,
   };
 }
@@ -246,7 +246,7 @@ function forcePanel(bot) {
   const list = bot.settings.forceSub || [];
   const lines = list.length ? list.map((c, i) => `${i + 1}. ${esc(c.title || c.chat)}`).join('\n') : 'لا توجد قنوات.';
   const kb = [];
-  if (list.length < MAX_FORCE) kb.push([btn('➕ إضافة قناة', `fsadd:${bot.id}`, 'success')]);
+  if (list.length < L(bot).force) kb.push([btn('➕ إضافة قناة', `fsadd:${bot.id}`, 'success')]);
   list.forEach((c, i) => kb.push([btn(`🗑 ${c.title || c.chat}`, `fsdel:${bot.id}:${i}`, 'danger')]));
   kb.push([btn('🔙 رجوع', `set:${bot.id}`)]);
   return {
@@ -341,7 +341,7 @@ async function registerBot(uid, token, me) {
     const lim = await botLimit(uid, u);
     const count = (await store.botsOf(uid)).length;
     if (count >= lim) {
-      return { error: `❌ وصلت للحد الأقصى (${lim} بوتات). زِد الحد من «شراء مساحة بوتات» أو «نظام الإحالة».` };
+      return { error: `❌ وصلت للحد الأقصى (${lim} بوتات). زِد الحد من «المتجر» 💎 أو «نظام الإحالة».` };
     }
   }
   try {
@@ -397,6 +397,7 @@ async function adminPanel() {
     kb: [
       [btn('📢 بث لكل المستخدمين', 'admbc', 'success')],
       [btn('🎩 نص الإعلان', 'admads'), btn('📞 نص جهات الاتصال', 'admct')],
+      [btn('💎 منح جواهر لمستخدم', 'admgem')],
       [btn('🔙 رجوع', 'menu')],
     ],
   };
@@ -404,13 +405,57 @@ async function adminPanel() {
 
 async function shopPanel(uid) {
   const u = await store.getUser(uid);
-  const lim = await botLimit(uid, u);
-  const kb = PACKS.map((p, i) => [btn(`${p.slots} مساحة — ${p.stars} ⭐`, `buy:${i}`, 'primary')]);
-  kb.push([btn('🔙 رجوع', 'menu')]);
+  const [lim, w, mine] = await Promise.all([botLimit(uid, u), store.getWallet(uid), store.botsOf(uid)]);
+  const perks = Object.keys(W.PERKS)
+    .map((k) => `${W.PERKS[k].icon} <b>${W.PERKS[k].name}</b> — ${W.PERKS[k].price} ${W.GEM}\n   ${W.PERKS[k].desc}`)
+    .join('\n');
   return {
     text:
-      `⭐ <b>شراء مساحة بوتات</b>\n\nحدّك الحالي: <b>${lim}</b> بوتًا (الحد الأقصى ${BOTS_CAP}).\n` +
-      'كل مساحة تتيح لك إضافة بوت جديد. الدفع بنجوم تيليجرام.',
+      `${W.GEM} <b>المتجر والمحفظة</b>\n\n💰 رصيدك: <b>${w.gems || 0}</b> ${W.GEM}\n` +
+      `🤖 بوتاتك: <b>${mine.length}/${lim}</b>\n\n` +
+      `➕ <b>مساحة بوت جديدة</b> — ${W.SLOT_PRICE} ${W.GEM}\n\n` +
+      `<b>ترقيات لكل بوت:</b>\n${perks}\n\n` +
+      '🎁 اجمع جواهر مجانًا: مكافأة يومية + 👥 الإحالات.',
+    kb: [
+      [btn('💳 شحن الجواهر (نجوم ⭐)', 'chg', 'success')],
+      [btn(`➕ شراء مساحة بوت — ${W.SLOT_PRICE} ${W.GEM}`, 'sbuy', 'primary')],
+      [btn('🚀 ترقية أحد بوتاتي', 'upl', 'primary')],
+      [btn('🎁 المكافأة اليومية', 'daily'), btn('👥 الإحالة', 'ref')],
+      [btn('🔙 رجوع', 'menu')],
+    ],
+  };
+}
+
+function chargePanel(w) {
+  return {
+    text:
+      `💳 <b>شحن الجواهر</b>\n\nرصيدك الحالي: <b>${w.gems || 0}</b> ${W.GEM}\n` +
+      'الدفع بنجوم تيليجرام ⭐ وتُضاف الجواهر فورًا. كلما كبرت الباقة زادت القيمة.',
+    kb: [
+      ...W.GEM_PACKS.map((p, i) => [btn(`${p.gems} ${W.GEM} — ${p.stars} ⭐`, `buy:${i}`, 'primary')]),
+      [btn('🔙 رجوع', 'shop')],
+    ],
+  };
+}
+
+function upgradePanel(bot, w) {
+  const owned = bot.perks || {};
+  const lim = L(bot);
+  const kb = Object.keys(W.PERKS).map((k) => {
+    const pk = W.PERKS[k];
+    return owned[k]
+      ? [btn(`✅ ${pk.icon} ${pk.name}`, 'noop')]
+      : [btn(`${pk.icon} ${pk.name} — ${pk.price} ${W.GEM}`, `ubuy:${bot.id}:${k}`, 'primary')];
+  });
+  kb.push([btn('💳 شحن الجواهر', 'chg')], [btn('🔙 رجوع', `b:${bot.id}`)]);
+  return {
+    text:
+      `💎 <b>ترقية @${esc(bot.username)}</b>\n\n🏷 الخطة: ${W.planLabel(bot)}\n💰 رصيدك: <b>${w.gems || 0}</b> ${W.GEM}\n\n` +
+      `الحدود الحالية: ${lim.pages} صفحة • ${lim.buttons} زرًا/صفحة • ${lim.rkb} زر كيبورد • ${lim.vars} متغيرًا • ` +
+      `${lim.force} قنوات • ${lim.admins} مشرفًا\n\n` +
+      Object.keys(W.PERKS)
+        .map((k) => `${W.PERKS[k].icon} <b>${W.PERKS[k].name}</b>: ${W.PERKS[k].desc}`)
+        .join('\n'),
     kb,
   };
 }
@@ -510,9 +555,15 @@ async function onManagedBot(mb) {
 /* ------------------------------------------------------------------ */
 /*  الدفع بالنجوم                                                      */
 /* ------------------------------------------------------------------ */
+const LEGACY_SLOTS = [1, 3, 10]; // فواتير مساحات قديمة قد تكون معلّقة
+
 async function onPreCheckout(q) {
-  const m = String(q.invoice_payload || '').match(/^slots:(\d+):(\d+)$/);
-  const ok = !!m && m[2] === String(q.from.id) && PACKS.some((p) => p.slots === Number(m[1]));
+  const payload = String(q.invoice_payload || '');
+  const g = payload.match(/^gems:(\d+):(\d+)$/);
+  const l = payload.match(/^slots:(\d+):(\d+)$/);
+  let ok = false;
+  if (g) ok = g[2] === String(q.from.id) && W.GEM_PACKS.some((p) => p.gems === Number(g[1]));
+  else if (l) ok = l[2] === String(q.from.id) && LEGACY_SLOTS.includes(Number(l[1]));
   const p = { pre_checkout_query_id: q.id, ok };
   if (!ok) p.error_message = 'طلب غير صالح';
   await tg.call(main(), 'answerPreCheckoutQuery', p);
@@ -520,10 +571,23 @@ async function onPreCheckout(q) {
 
 async function onPayment(ctx, u) {
   const pay = ctx.msg.successful_payment;
-  const m = String(pay.invoice_payload || '').match(/^slots:(\d+):(\d+)$/);
+  const payload = String(pay.invoice_payload || '');
+  const g = payload.match(/^gems:(\d+):(\d+)$/);
+  if (g) {
+    if (g[2] !== String(ctx.uid)) return;
+    const pack = W.GEM_PACKS.find((p) => p.gems === Number(g[1]));
+    if (!pack) return;
+    const added = await store.addGems(ctx.uid, pack.gems, pay.telegram_payment_charge_id);
+    if (!added) return; // دفعة مكرّرة
+    const w = await store.getWallet(ctx.uid);
+    return send(ctx.chatId, `✅ تم الدفع! أُضيفت <b>${pack.gems}</b> ${W.GEM} إلى رصيدك.\n💰 رصيدك الآن: <b>${w.gems}</b> ${W.GEM}`, [
+      [btn('💎 المتجر', 'shop', 'primary')],
+    ]);
+  }
+  const m = payload.match(/^slots:(\d+):(\d+)$/);
   if (!m || m[2] !== String(ctx.uid)) return;
   const n = Number(m[1]);
-  if (!PACKS.some((p) => p.slots === n)) return;
+  if (!LEGACY_SLOTS.includes(n)) return;
   const charges = u.charges || [];
   if (charges.includes(pay.telegram_payment_charge_id)) return; // منع التكرار
   u.extraSlots = (u.extraSlots || 0) + n;
@@ -556,7 +620,10 @@ async function onMessage(ctx) {
       // نحتسب الإحالة للمستخدمين الجدد فقط
       if (rm && Date.now() - (u.createdAt || 0) < 3600 * 1000) {
         const ok = await store.addRef(rm[1], uid).catch(() => false);
-        if (ok) send(rm[1], '🎉 انضم مستخدم جديد عبر رابط إحالتك وزاد حدّ بوتاتك!').catch(() => {});
+        if (ok) {
+          store.addGems(rm[1], REF_GEMS).catch(() => {});
+          send(rm[1], `🎉 انضم مستخدم جديد عبر رابطك! حصلت على <b>${REF_GEMS}</b> ${W.GEM} ومساحة بوت إضافية.`).catch(() => {});
+        }
       }
     }
     u.state = null;
@@ -586,6 +653,15 @@ async function onMessage(ctx) {
       return send(chatId, '👆 هذه الرسالة ستُرسل لكل مستخدمي الصانع. تأكيد؟', [
         [btn('✅ بدء البث', 'admgo', 'success'), btn('إلغاء', 'adm')],
       ]);
+    }
+    case 'adm_gem': {
+      if (!isAdmin(uid)) return;
+      const gm = text.trim().match(/^(\d{1,15})\s+(\d{1,6})$/);
+      if (!gm) return send(chatId, '⚠️ الصيغة: <code>آيدي_المستخدم عدد_الجواهر</code> مثل <code>123456789 50</code>');
+      await store.addGems(gm[1], Number(gm[2]));
+      await setState(uid, u, null);
+      send(gm[1], `🎁 أُضيفت <b>${gm[2]}</b> ${W.GEM} إلى رصيدك من الإدارة.`).catch(() => {});
+      return send(chatId, `✅ تم منح ${gm[2]} ${W.GEM} للمستخدم ${gm[1]}.`, [[btn('🔙 لوحة الأدمن', 'adm')]]);
     }
     case 'adm_ads':
     case 'adm_ct': {
@@ -622,7 +698,7 @@ async function onMessage(ctx) {
     case 'ptitle': {
       const title = text.trim();
       if (!title || title.length > 30) return send(chatId, '⚠️ أرسل اسمًا للصفحة (حتى 30 حرفًا).');
-      if (Object.keys(bot.pages).length >= MAX_PAGES) return fail('❌ وصلت للحد الأقصى للصفحات.');
+      if (Object.keys(bot.pages).length >= L(bot).pages) return fail('❌ وصلت للحد الأقصى للصفحات.');
       const id = store.rid('p');
       bot.pages[id] = store.newPage(id, title);
       await store.saveBot(bot);
@@ -712,7 +788,7 @@ async function onMessage(ctx) {
     case 'fs_add': {
       const chat = parseChannel(msg);
       if (chat === null) return send(chatId, '⚠️ أرسل معرّف القناة (@name) أو رابطها أو حوّل رسالة منها.');
-      if ((bot.settings.forceSub || []).length >= MAX_FORCE) return fail('❌ وصلت للحد الأقصى للقنوات.');
+      if ((bot.settings.forceSub || []).length >= L(bot).force) return fail('❌ وصلت للحد الأقصى للقنوات.');
       const token = decrypt(bot.tokenEnc);
       try {
         const info = await tg.call(token, 'getChat', { chat_id: chat });
@@ -777,7 +853,7 @@ const BOT_ACTS = new Set([
   'b', 'pgs', 'pg', 'padd', 'pmsg', 'pbt', 'pprev', 'pren', 'cpg', 'pdel', 'pdelok',
   'pbadd', 'pbtype', 'pbd', 'pbmv', 'pbrow', 'pbcol', 'pbcs', 'pbdel',
   'cmds', 'cadd', 'cdel', 'cpgs', 'set', 'tg', 'fs', 'fsadd', 'fsdel',
-  'bc', 'bcgo', 'bcnext', 'st', 'rtok', 'del', 'delok', 'rp',
+  'bc', 'bcgo', 'bcnext', 'st', 'rtok', 'del', 'delok', 'rp', 'ub', 'ubuy',
 ]);
 const PAGE_ACTS = new Set([
   'pg', 'pmsg', 'pbt', 'pprev', 'pren', 'cpg', 'pdel', 'pdelok',
@@ -842,21 +918,61 @@ async function onCallback(ctx) {
     }
 
     case 'shop': {
+      await setState(uid, u, null);
       const p = await shopPanel(uid);
       return show(ctx, p.text, p.kb);
     }
+    case 'chg': {
+      const p = chargePanel(await store.getWallet(uid));
+      return show(ctx, p.text, p.kb);
+    }
     case 'buy': {
-      const p = PACKS[Number(parts[1])];
+      const p = W.GEM_PACKS[Number(parts[1])];
       if (!p) return;
       await tg.call(main(), 'sendInvoice', {
         chat_id: ctx.chatId,
-        title: `${p.slots} مساحة بوتات`,
-        description: `إضافة ${p.slots} مساحة لإنشاء بوتات جديدة`,
-        payload: `slots:${p.slots}:${uid}`,
+        title: `${p.gems} جوهرة 💎`,
+        description: `شحن ${p.gems} جوهرة تُصرف على مساحات بوتات وترقيات`,
+        payload: `gems:${p.gems}:${uid}`,
         currency: 'XTR',
-        prices: [{ label: `${p.slots} مساحة`, amount: p.stars }],
+        prices: [{ label: `${p.gems} جوهرة`, amount: p.stars }],
       });
       return;
+    }
+    case 'sbuy': {
+      const lim = await botLimit(uid, u);
+      if (lim >= BOTS_CAP) return alert(ctx, `وصلت للسقف الأقصى (${BOTS_CAP} بوت).`);
+      const ok = await store.spendGems(uid, W.SLOT_PRICE, { slots: 1 });
+      if (!ok) {
+        ack(ctx);
+        const w = await store.getWallet(uid);
+        return show(ctx, `❌ رصيدك غير كافٍ.\nتحتاج <b>${W.SLOT_PRICE}</b> ${W.GEM} ولديك <b>${w.gems || 0}</b>.`, [
+          [btn('💳 شحن الجواهر', 'chg', 'success'), btn('🎁 المكافأة اليومية', 'daily')],
+          [btn('🔙 رجوع', 'shop')],
+        ]);
+      }
+      const p = await shopPanel(uid);
+      return show(ctx, `✅ تمت إضافة مساحة بوت جديدة.\n\n${p.text}`, p.kb);
+    }
+    case 'daily': {
+      const r = await store.claimDaily(uid);
+      if (!r.ok) {
+        const t = Math.ceil(r.wait / 60000);
+        return alert(ctx, `⏳ تستلم مكافأتك التالية بعد ${Math.floor(t / 60)} ساعة و${t % 60} دقيقة.`);
+      }
+      const w = await store.getWallet(uid);
+      return show(
+        ctx,
+        `🎁 <b>مكافأة اليوم</b>\n\n+${r.gems} ${W.GEM}\n🔥 أيام متتالية: <b>${r.streak}</b> (تزيد المكافأة كل يوم حتى 7 أيام)\n💰 رصيدك: <b>${w.gems}</b> ${W.GEM}`,
+        [[btn('💎 المتجر', 'shop', 'primary')], [btn('🔙 رجوع', 'menu')]]
+      );
+    }
+    case 'upl': {
+      const mine = await store.botsOf(uid);
+      if (!mine.length) return alert(ctx, 'لا توجد لديك بوتات بعد.');
+      const kb = mine.map((x) => [btn(`🤖 @${x.username} — ${W.planLabel(x)}`, `ub:${x.id}`, 'primary')]);
+      kb.push([btn('🔙 رجوع', 'shop')]);
+      return show(ctx, '🚀 اختر البوت الذي تريد ترقيته:', kb);
     }
 
     case 'ref': {
@@ -865,7 +981,7 @@ async function onCallback(ctx) {
       const link = `https://t.me/${me.username}?start=ref_${uid}`;
       return show(
         ctx,
-        `👥 <b>نظام الإحالة</b>\n\nكل مستخدم جديد يدخل عبر رابطك يمنحك <b>${REF_SLOTS}</b> مساحة بوت إضافية.\n\n🔗 رابطك:\n<code>${link}</code>\n\n✅ إحالاتك الناجحة: ${n}`,
+        `👥 <b>نظام الإحالة</b>\n\nكل مستخدم جديد يدخل عبر رابطك يمنحك <b>${REF_SLOTS}</b> مساحة بوت إضافية + <b>${REF_GEMS}</b> ${W.GEM}.\n\n🔗 رابطك:\n<code>${link}</code>\n\n✅ إحالاتك الناجحة: ${n}`,
         [
           [{ text: '📤 مشاركة الرابط', url: `https://t.me/share/url?url=${encodeURIComponent(link)}` }],
           [btn('🔙 رجوع', 'menu')],
@@ -887,7 +1003,7 @@ async function onCallback(ctx) {
       const bot = await ownedBot(uid, st.botId);
       const page = bot && pageOf(bot, st.pageId);
       if (!page) return;
-      if (page.buttons.length < MAX_BUTTONS) {
+      if (page.buttons.length < L(bot).buttons) {
         const b = { id: store.rid('b'), text: st.text, type: st.type, style, newRow: true };
         if (st.type === 'page') b.page = st.value;
         else if (st.type === 'copy') b.value = st.value;
@@ -920,6 +1036,9 @@ async function onCallback(ctx) {
     case 'admbc':
       await setState(uid, u, { step: 'adm_bc' });
       return ask(ctx, '📢 أرسل الرسالة التي تريد بثها لكل مستخدمي الصانع (أي نوع).', 'adm');
+    case 'admgem':
+      await setState(uid, u, { step: 'adm_gem' });
+      return ask(ctx, '💎 أرسل: <code>آيدي_المستخدم عدد_الجواهر</code> (مثل <code>123456789 50</code>).', 'adm');
     case 'admads':
     case 'admct':
       await setState(uid, u, { step: act === 'admads' ? 'adm_ads' : 'adm_ct' });
@@ -989,7 +1108,7 @@ async function onBotAction(ctx, u, bot, parts) {
       return show(ctx, p.text, p.kb);
     }
     case 'padd':
-      if (Object.keys(bot.pages).length >= MAX_PAGES) return alert(ctx, 'وصلت للحد الأقصى للصفحات.');
+      if (Object.keys(bot.pages).length >= L(bot).pages) return alert(ctx, 'وصلت للحد الأقصى للصفحات.');
       await setState(uid, u, { step: 'ptitle', botId: bot.id });
       return ask(ctx, '✏️ أرسل <b>اسم الصفحة</b> الجديدة (حتى 30 حرفًا).', `pgs:${bot.id}`);
     case 'pmsg':
@@ -1069,7 +1188,7 @@ async function onBotAction(ctx, u, bot, parts) {
       await clear();
       return buttonsView();
     case 'pbadd':
-      if (page.buttons.length >= MAX_BUTTONS) return alert(ctx, 'وصلت للحد الأقصى للأزرار.');
+      if (page.buttons.length >= L(bot).buttons) return alert(ctx, 'وصلت للحد الأقصى للأزرار.');
       return show(ctx, '🔘 اختر <b>نوع الزر</b>:', [
         ...Object.keys(BTN_TYPES).map((t) => [btn(BTN_TYPES[t], `pbtype:${bot.id}:${page.id}:${t}`)]),
         [btn('🔙 رجوع', `pbt:${bot.id}:${page.id}`)],
@@ -1132,7 +1251,7 @@ async function onBotAction(ctx, u, bot, parts) {
       return show(ctx, p.text, p.kb);
     }
     case 'fsadd':
-      if ((bot.settings.forceSub || []).length >= MAX_FORCE) return alert(ctx, 'وصلت للحد الأقصى للقنوات.');
+      if ((bot.settings.forceSub || []).length >= L(bot).force) return alert(ctx, 'وصلت للحد الأقصى للقنوات.');
       await setState(uid, u, { step: 'fs_add', botId: bot.id });
       return ask(ctx, '📢 أرسل معرّف القناة (<code>@name</code>) أو رابطها، أو حوّل إليّ رسالة منها.\n\n⚠️ أضف <b>بوتك مشرفًا</b> في القناة أولًا.', `fs:${bot.id}`);
     case 'fsdel': {
@@ -1196,6 +1315,32 @@ async function onBotAction(ctx, u, bot, parts) {
         done ? `📢 <b>اكتمل البث</b>\n\n${bcReport(job)}` : `⏳ <b>البث جارٍ…</b>\n\n${bcReport(job)}`,
         done ? [[btn('🔙 رجوع', `b:${bot.id}`)]] : [[btn('▶️ متابعة', `bcnext:${bot.id}`, 'success')]]
       );
+    }
+
+    /* ---- ترقيات البوت بالجواهر ---- */
+    case 'ub': {
+      const p = upgradePanel(bot, await store.getWallet(uid));
+      return show(ctx, p.text, p.kb);
+    }
+    case 'ubuy': {
+      const perk = W.PERKS[pid];
+      if (!perk) return;
+      if ((bot.perks || {})[pid]) return alert(ctx, 'هذه الترقية مفعّلة بالفعل.');
+      const claimed = await store.claimPerk(bot.id, pid);
+      if (!claimed) return alert(ctx, 'هذه الترقية مفعّلة بالفعل.');
+      const paid = await store.spendGems(uid, perk.price);
+      if (!paid) {
+        await store.releasePerk(bot.id, pid);
+        ack(ctx);
+        const w = await store.getWallet(uid);
+        return show(ctx, `❌ رصيدك غير كافٍ.\nتحتاج <b>${perk.price}</b> ${W.GEM} ولديك <b>${w.gems || 0}</b>.`, [
+          [btn('💳 شحن الجواهر', 'chg', 'success'), btn('🎁 المكافأة اليومية', 'daily')],
+          [btn('🔙 رجوع', `ub:${bot.id}`)],
+        ]);
+      }
+      const fresh = await store.getBot(bot.id);
+      const p = upgradePanel(fresh, await store.getWallet(uid));
+      return show(ctx, `✅ تم تفعيل ${perk.icon} <b>${perk.name}</b>!\n\n${p.text}`, p.kb);
     }
 
     /* ---- الرد على رسالة مستخدم (وضع التواصل) ---- */
