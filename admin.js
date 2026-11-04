@@ -5,6 +5,7 @@ const store = require('./store');
 const { sendPage, extractMessage } = require('./render');
 const actions = require('./actions');
 const W = require('./wallet');
+const AI = require('./ai');
 const L = (bot) => W.limitsOf(bot); // الحدود حسب ترقيات البوت
 
 const BC_BUDGET = Number(process.env.BC_BUDGET_MS || 8000);
@@ -62,7 +63,7 @@ permOps('editor', 'tn tp br bp bs bu bd bw bx bxy bpn');
 permOps('vars', 'ac an as ao al ad vl va vsg vsu vtn vtt vp vv vu uvs uvc vx vxy');
 permOps('content', 'sm sp sk skr');
 permOps('channels', 'fs fa fd ft ff');
-permOps('settings', 'tf');
+permOps('settings', 'tf ait aii aiw aia aix');
 permOps('bc', 'bcgo bcnext');
 permOps('owner', 'ml ma mp mt md mdy');
 
@@ -212,14 +213,34 @@ function pagesKb(bot, prefix, extraFirst) {
 function settingsPanel(bot) {
   const s = bot.settings;
   const on = (v) => (v ? '✅' : '❌');
+  const a = AI.cfg(bot);
   return {
     text:
       `⚙️ <b>إعدادات @${esc(bot.username)}</b>\n\n` +
-      `📨 وضع التواصل: ${on(s.feedback)}\n🔒 منع الحفظ والتوجيه: ${on(s.protect)}`,
+      `📨 وضع التواصل: ${on(s.feedback)}\n🔒 منع الحفظ والتوجيه: ${on(s.protect)}\n` +
+      `🤖 الذكاء الاصطناعي: ${on(a.enabled)}${a.info ? '' : ' (أضف معلومات النشاط أولًا)'}`,
     kb: [
       [ib(`${on(s.feedback)} وضع التواصل`, 'a:tf:feedback')],
       [ib(`${on(s.protect)} منع الحفظ والتوجيه`, 'a:tf:protect')],
+      [ib(`${on(a.enabled)} 🤖 الذكاء الاصطناعي`, 'a:ait')],
+      [ib('📚 معلومات النشاط', 'a:aii')],
       [ib('إغلاق', 'a:cx')],
+    ],
+  };
+}
+
+function aiPanel(bot) {
+  const a = AI.cfg(bot);
+  const prev = a.info ? esc(a.info.slice(0, 700)) + (a.info.length > 700 ? '…' : '') : 'لا توجد معلومات بعد.';
+  return {
+    text:
+      `📚 <b>معلومات نشاطك للذكاء الاصطناعي</b> (${a.info.length}/${AI.MAX_INFO} حرفًا)\n\n${prev}\n\n` +
+      'اكتب: ما تبيعه، الأسعار، ساعات العمل، العناوين، طرق الدفع والتوصيل، السياسات، وأسئلة العملاء الشائعة. ' +
+      'سيردّ البوت على عملائك بنفس لهجتهم، وإن لم يجد الإجابة يحوّلهم إليك.',
+    kb: [
+      [ib('✏️ استبدال المعلومات', 'a:aiw'), ib('➕ إضافة', 'a:aia')],
+      [ib('🗑 مسح المعلومات', 'a:aix')],
+      [ib('🔙 رجوع', 'a:tf:none')],
     ],
   };
 }
@@ -230,7 +251,7 @@ async function statsText(bot) {
     `📊 <b>إحصائيات @${esc(bot.username)}</b>\n\n` +
     `👥 المشتركون: ${s.total} (نشطون ${s.active} • حاظرون ${s.blocked})\n` +
     `🆕 جدد خلال 24 ساعة: ${s.today}\n📅 خلال 7 أيام: ${s.week}\n\n` +
-    `👁 مشاهدات الصفحات: ${c.views || 0}\n👆 ضغطات الأزرار: ${c.clicks || 0}\n📩 رسائل التواصل: ${c.feedback || 0}`
+    `👁 مشاهدات الصفحات: ${c.views || 0}\n👆 ضغطات الأزرار: ${c.clicks || 0}\n📩 رسائل التواصل: ${c.feedback || 0}\n🤖 ردود الذكاء الاصطناعي: ${c.ai || 0}`
   );
 }
 
@@ -796,6 +817,22 @@ async function stepInput(bot, token, msg, st, save, h) {
       return refresh(bot, token, chatId, st, '✅ تم حفظ المحتوى.');
     }
 
+    case 'ai_info': {
+      if (!text || text.startsWith('/')) return say(token, chatId, '⚠️ أرسل المعلومات كنص.\nللإلغاء: /cancel');
+      const a = AI.cfg(bot);
+      const append = !!(st.data && st.data.append);
+      const full = append && a.info ? `${a.info}\n${text}` : text;
+      if (full.length > AI.MAX_INFO) return say(token, chatId, `⚠️ المعلومات أطول من الحد (${AI.MAX_INFO} حرفًا). اختصرها وأعد الإرسال.`);
+      bot.settings.ai = Object.assign({}, a, { info: full });
+      await store.saveBot(bot);
+      st.step = null;
+      st.data = null;
+      await save();
+      const p = aiPanel(bot);
+      await say(token, chatId, '✅ تم حفظ معلومات النشاط.');
+      return say(token, chatId, p.text, p.kb);
+    }
+
     case 'bc_msg': {
       const ex = adopt(extractMessage(msg), bot);
       if (ex.error) return say(token, chatId, ex.error);
@@ -947,7 +984,48 @@ async function onCallback(bot, token, q) {
     }
 
     // ---- الإعدادات ----
+    case 'ait': {
+      const a = AI.cfg(bot);
+      if (!a.enabled && !a.info) return answer({ text: '📚 أضف معلومات النشاط أولًا ثم فعّل الذكاء الاصطناعي.', show_alert: true });
+      bot.settings.ai = Object.assign({}, a, { enabled: !a.enabled });
+      await store.saveBot(bot);
+      await answer();
+      const p = settingsPanel(bot);
+      return edit(p.text, p.kb);
+    }
+    case 'aii': {
+      await answer();
+      const p = aiPanel(bot);
+      return edit(p.text, p.kb);
+    }
+    case 'aiw':
+    case 'aia': {
+      st.step = 'ai_info';
+      st.data = { append: op === 'aia' };
+      await save();
+      await answer();
+      return say(
+        token,
+        chatId,
+        (op === 'aia' ? '➕ أرسل المعلومات <b>الإضافية</b>' : '✏️ أرسل معلومات نشاطك <b>كاملة</b> (تستبدل القديمة)') +
+          ` كنص (حتى ${AI.MAX_INFO} حرفًا).\nللإلغاء: /cancel`
+      );
+    }
+    case 'aix': {
+      const a = AI.cfg(bot);
+      bot.settings.ai = Object.assign({}, a, { info: '', enabled: false });
+      await store.saveBot(bot);
+      await answer({ text: 'تم المسح وإيقاف الذكاء الاصطناعي.' });
+      const p = aiPanel(bot);
+      return edit(p.text, p.kb);
+    }
+
     case 'tf': {
+      if (arg === 'none') {
+        await answer();
+        const q0 = settingsPanel(bot);
+        return edit(q0.text, q0.kb);
+      }
       if (arg !== 'feedback' && arg !== 'protect') return answer();
       bot.settings[arg] = !bot.settings[arg];
       await store.saveBot(bot);
