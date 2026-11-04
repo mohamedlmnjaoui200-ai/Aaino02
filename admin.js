@@ -6,6 +6,7 @@ const { sendPage, extractMessage } = require('./render');
 const actions = require('./actions');
 const W = require('./wallet');
 const AI = require('./ai');
+const shop = require('./shop');
 const L = (bot) => W.limitsOf(bot); // الحدود حسب ترقيات البوت
 
 const BC_BUDGET = Number(process.env.BC_BUDGET_MS || 8000);
@@ -32,6 +33,8 @@ const T = {
   vars: '🗄 المتغيرات',
   channels: '📡 القنوات والمجموعات',
   admins: '👮 المشرفون',
+  wallet: '💎 المحفظة والمتجر',
+  brand: '🎨 هوية البوت',
 };
 const RESERVED = new Set(Object.values(T));
 
@@ -63,9 +66,9 @@ permOps('editor', 'tn tp br bp bs bu bd bw bx bxy bpn');
 permOps('vars', 'ac an as ao al ad vl va vsg vsu vtn vtt vp vv vu uvs uvc vx vxy');
 permOps('content', 'sm sp sk skr');
 permOps('channels', 'fs fa fd ft ff');
-permOps('settings', 'tf ait aii aiw aia aix');
+permOps('settings', 'tf ait aii aiw aia aix bnm bds bsh');
 permOps('bc', 'bcgo bcnext');
-permOps('owner', 'ml ma mp mt md mdy');
+permOps('owner', 'ml ma mp mt md mdy wl wd wc wb wp ws wn wi');
 
 /* ------------------------------------------------------------------ */
 /*  الكيبورد السفلي                                                    */
@@ -89,10 +92,10 @@ function rowsFor(bot, st, uid) {
     if (can(bot, uid, 'stats')) btns.push(T.stats);
     if (can(bot, uid, 'bc')) btns.push(T.bc);
     if (can(bot, uid, 'content')) btns.push(T.start);
-    if (can(bot, uid, 'settings')) btns.push(T.settings);
+    if (can(bot, uid, 'settings')) btns.push(T.settings, T.brand);
     if (can(bot, uid, 'vars')) btns.push(T.vars);
     if (can(bot, uid, 'channels')) btns.push(T.channels);
-    if (isOwner(bot, uid)) btns.push(T.admins);
+    if (isOwner(bot, uid)) btns.push(T.admins, T.wallet);
     const out = [];
     for (let i = 0; i < btns.length; i += 2) out.push(btns.slice(i, i + 2));
     out.push([T.exit]);
@@ -229,14 +232,42 @@ function settingsPanel(bot) {
   };
 }
 
+async function brandPanel(bot, token) {
+  if (!(bot.perks && bot.perks.brand)) {
+    return {
+      text: '🎨 <b>هوية البوت</b> 🔒\n\nغيّر اسم البوت ووصفه ونبذته مباشرة من هنا دون BotFather.\nالميزة تحتاج ترقية «🎨 هوية البوت» (من المالك: 💎 المحفظة والمتجر).',
+      kb: [[ib('ℹ️ تفاصيل الترقية', 'a:wi:brand')], [ib('إغلاق', 'a:cx')]],
+    };
+  }
+  const get = (m) => tg.call(token, m, {}).catch(() => ({}));
+  const [nm, ds, sh] = await Promise.all([get('getMyName'), get('getMyDescription'), get('getMyShortDescription')]);
+  return {
+    text:
+      `🎨 <b>هوية @${esc(bot.username)}</b>\n\n` +
+      `🏷 الاسم: ${esc(nm.name || '—')}\n\n📝 الوصف:\n${esc(ds.description || '—')}\n\n💬 النبذة القصيرة:\n${esc(sh.short_description || '—')}`,
+    kb: [
+      [ib('✏️ تغيير الاسم', 'a:bnm'), ib('✏️ تغيير النبذة', 'a:bsh')],
+      [ib('✏️ تغيير الوصف', 'a:bds')],
+      [ib('إغلاق', 'a:cx')],
+    ],
+  };
+}
+
+const BRAND = {
+  nm: { method: 'setMyName', field: 'name', max: 64, label: 'اسم البوت', clear: false },
+  ds: { method: 'setMyDescription', field: 'description', max: 512, label: 'الوصف', clear: true },
+  sh: { method: 'setMyShortDescription', field: 'short_description', max: 120, label: 'النبذة القصيرة', clear: true },
+};
+
 function aiPanel(bot) {
   const a = AI.cfg(bot);
   const prev = a.info ? esc(a.info.slice(0, 700)) + (a.info.length > 700 ? '…' : '') : 'لا توجد معلومات بعد.';
   return {
     text:
-      `📚 <b>معلومات نشاطك للذكاء الاصطناعي</b> (${a.info.length}/${AI.MAX_INFO} حرفًا)\n\n${prev}\n\n` +
+      `📚 <b>معلومات نشاطك للذكاء الاصطناعي</b> (${a.info.length}/${AI.maxInfo(bot)} حرفًا)\n\n${prev}\n\n` +
       'اكتب: ما تبيعه، الأسعار، ساعات العمل، العناوين، طرق الدفع والتوصيل، السياسات، وأسئلة العملاء الشائعة. ' +
-      'سيردّ البوت على عملائك بنفس لهجتهم، وإن لم يجد الإجابة يحوّلهم إليك.',
+      'سيردّ البوت على عملائك بنفس لهجتهم، وإن لم يجد الإجابة يحوّلهم إليك.' +
+      (AI.isPro(bot) ? '\n🔥 صائد العملاء مفعّل: ستصلك تنبيهات العملاء الجاهزين للشراء.' : '\n🧠 لحدّ أكبر وصائد العملاء: المحفظة ← ذكاء Pro.'),
     kb: [
       [ib('✏️ استبدال المعلومات', 'a:aiw'), ib('➕ إضافة', 'a:aia')],
       [ib('🗑 مسح المعلومات', 'a:aix')],
@@ -247,11 +278,37 @@ function aiPanel(bot) {
 
 async function statsText(bot) {
   const [s, c] = await Promise.all([store.subStats(bot.id), store.getStats(bot.id)]);
-  return (
+  const base =
     `📊 <b>إحصائيات @${esc(bot.username)}</b>\n\n` +
     `👥 المشتركون: ${s.total} (نشطون ${s.active} • حاظرون ${s.blocked})\n` +
     `🆕 جدد خلال 24 ساعة: ${s.today}\n📅 خلال 7 أيام: ${s.week}\n\n` +
-    `👁 مشاهدات الصفحات: ${c.views || 0}\n👆 ضغطات الأزرار: ${c.clicks || 0}\n📩 رسائل التواصل: ${c.feedback || 0}\n🤖 ردود الذكاء الاصطناعي: ${c.ai || 0}`
+    `👁 مشاهدات الصفحات: ${c.views || 0}\n👆 ضغطات الأزرار: ${c.clicks || 0}\n📩 رسائل التواصل: ${c.feedback || 0}\n🤖 ردود الذكاء الاصطناعي: ${c.ai || 0}`;
+  if (!(bot.perks && bot.perks.stats)) {
+    return base + '\n\n🔒 <b>تحليلات Pro</b>: نمو يومي، أكثر الصفحات ضغطًا، معدل التفاعل ونسبة الحظر. فعّلها من «💎 المحفظة والمتجر».';
+  }
+  const DAY = 24 * 3600 * 1000;
+  const days = await store.joinsByDay(bot.id, 7);
+  const max = Math.max(1, ...days);
+  const bars = days
+    .map((n, i) => {
+      const d = new Date(Date.now() - (6 - i) * DAY);
+      const lab = `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`;
+      return `${lab} ${'▇'.repeat(n ? Math.max(1, Math.round((n / max) * 10)) : 0)} ${n}`;
+    })
+    .join('\n');
+  const top = Object.entries(c.pg || {})
+    .sort((x, y) => y[1] - x[1])
+    .slice(0, 5)
+    .map(([id, n], i) => `${i + 1}. ${esc((bot.pages[id] && bot.pages[id].title) || id)} — ${n}`)
+    .join('\n');
+  const ctr = c.views ? ((((c.clicks || 0) / c.views) * 100).toFixed(1) + '%') : '—';
+  const blockRate = s.total ? ((s.blocked / s.total) * 100).toFixed(1) + '%' : '—';
+  return (
+    base +
+    `\n🔥 عملاء محتملون: ${c.leads || 0}\n\n📊 <b>تحليلات Pro</b>\n` +
+    `🎯 معدل التفاعل: ${ctr}\n🚫 نسبة الحظر: ${blockRate}\n\n` +
+    `📈 <b>المنضمون (كل 24 ساعة)</b>\n<pre>${bars}</pre>\n` +
+    `🏆 <b>أكثر الصفحات ضغطًا</b>\n${top || 'لا بيانات بعد (تُجمع من الآن).'}`
   );
 }
 
@@ -552,6 +609,18 @@ async function onMessage(bot, token, msg, h) {
       const p = settingsPanel(bot);
       return say(token, chatId, p.text, p.kb);
     }
+    case T.brand: {
+      if (mode !== 'admin') break;
+      if (!can(bot, uid, 'settings')) return deny();
+      const p = await brandPanel(bot, token);
+      return say(token, chatId, p.text, p.kb);
+    }
+    case T.wallet: {
+      if (mode !== 'admin') break;
+      if (!isOwner(bot, uid)) return deny();
+      const p = await shop.panel(bot);
+      return say(token, chatId, p.text, p.kb);
+    }
     case T.admins: {
       if (mode !== 'admin') break;
       if (!isOwner(bot, uid)) return deny();
@@ -817,12 +886,36 @@ async function stepInput(bot, token, msg, st, save, h) {
       return refresh(bot, token, chatId, st, '✅ تم حفظ المحتوى.');
     }
 
+    case 'brand': {
+      const k = BRAND[(st.data || {}).kind];
+      if (!k) {
+        st.step = null;
+        await save();
+        return false;
+      }
+      if (!(bot.perks && bot.perks.brand)) return say(token, chatId, '🔒 هذه الميزة تحتاج ترقية «هوية البوت».');
+      const clear = k.clear && text === '-';
+      if (!text || text.startsWith('/') && !clear) return say(token, chatId, '⚠️ أرسل النص المطلوب.\nللإلغاء: /cancel');
+      if (!clear && text.length > k.max) return say(token, chatId, `⚠️ الحد الأقصى ${k.max} حرفًا. اختصر وأعد الإرسال.`);
+      try {
+        await tg.call(token, k.method, { [k.field]: clear ? '' : text });
+      } catch (e) {
+        return say(token, chatId, `⚠️ رفض تيليجرام التعديل: ${esc((e && e.message) || 'خطأ')}\nحاول لاحقًا (قد يوجد حد لتكرار التغيير).`);
+      }
+      st.step = null;
+      st.data = null;
+      await save();
+      await say(token, chatId, `✅ تم تحديث ${k.label}.`);
+      const p = await brandPanel(bot, token);
+      return say(token, chatId, p.text, p.kb);
+    }
+
     case 'ai_info': {
       if (!text || text.startsWith('/')) return say(token, chatId, '⚠️ أرسل المعلومات كنص.\nللإلغاء: /cancel');
       const a = AI.cfg(bot);
       const append = !!(st.data && st.data.append);
       const full = append && a.info ? `${a.info}\n${text}` : text;
-      if (full.length > AI.MAX_INFO) return say(token, chatId, `⚠️ المعلومات أطول من الحد (${AI.MAX_INFO} حرفًا). اختصرها وأعد الإرسال.`);
+      if (full.length > AI.maxInfo(bot)) return say(token, chatId, `⚠️ المعلومات أطول من الحد (${AI.maxInfo(bot)} حرفًا). اختصرها وأعد الإرسال.`);
       bot.settings.ai = Object.assign({}, a, { info: full });
       await store.saveBot(bot);
       st.step = null;
@@ -984,6 +1077,29 @@ async function onCallback(bot, token, q) {
     }
 
     // ---- الإعدادات ----
+    case 'bnm':
+    case 'bds':
+    case 'bsh': {
+      if (!(bot.perks && bot.perks.brand)) return answer({ text: '🔒 تحتاج ترقية «هوية البوت».', show_alert: true });
+      const kind = op === 'bnm' ? 'nm' : op === 'bds' ? 'ds' : 'sh';
+      st.step = 'brand';
+      st.data = { kind };
+      await save();
+      await answer();
+      const k = BRAND[kind];
+      return say(token, chatId, `✏️ أرسل <b>${k.label}</b> الجديد (حتى ${k.max} حرفًا${k.clear ? '، أو - لمسحه' : ''}).\nللإلغاء: /cancel`);
+    }
+
+    case 'wi':
+    case 'wl':
+    case 'wc':
+    case 'wb':
+    case 'wd':
+    case 'wp':
+    case 'ws':
+    case 'wn':
+      return shop.onCallback(bot, token, q, op, arg, { answer, edit });
+
     case 'ait': {
       const a = AI.cfg(bot);
       if (!a.enabled && !a.info) return answer({ text: '📚 أضف معلومات النشاط أولًا ثم فعّل الذكاء الاصطناعي.', show_alert: true });
@@ -1008,7 +1124,7 @@ async function onCallback(bot, token, q) {
         token,
         chatId,
         (op === 'aia' ? '➕ أرسل المعلومات <b>الإضافية</b>' : '✏️ أرسل معلومات نشاطك <b>كاملة</b> (تستبدل القديمة)') +
-          ` كنص (حتى ${AI.MAX_INFO} حرفًا).\nللإلغاء: /cancel`
+          ` كنص (حتى ${AI.maxInfo(bot)} حرفًا).\nللإلغاء: /cancel`
       );
     }
     case 'aix': {
