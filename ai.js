@@ -53,33 +53,55 @@ function systemPrompt(bot, info) {
   ].join('\n');
 }
 
+async function callGemini(model, system, messages, timeoutMs) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const gr = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model.replace(/^models\//, ''))}:generateContent`,
+      {
+        method: 'POST',
+        signal: ctl.signal,
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+          generationConfig: { maxOutputTokens: 1500, temperature: 0.6 },
+        }),
+      }
+    );
+    const gj = await gr.json();
+    if (!gr.ok) throw new Error((gj && gj.error && gj.error.message) || `Gemini http ${gr.status}`);
+    const cand = gj.candidates && gj.candidates[0];
+    const txt = ((cand && cand.content && cand.content.parts) || []).filter((x) => x.text && !x.thought).map((x) => x.text).join('\n').trim();
+    if (!txt) throw new Error(`empty reply (${(cand && cand.finishReason) || (gj.promptFeedback && gj.promptFeedback.blockReason) || 'no candidates'})`);
+    return txt;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Gemini: نجرّب النموذج المختار ثم نموذجًا أخف كاحتياطي (يتجاوز الازدحام وانتهاء المهلة)
+async function callGeminiChain(system, messages) {
+  const chain = [MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest'].filter((m, i, a) => a.indexOf(m) === i).slice(0, 3);
+  let last;
+  for (let i = 0; i < chain.length; i++) {
+    try {
+      return await callGemini(chain[i], system, messages, i === 0 ? 12000 : 9000);
+    } catch (e) {
+      last = new Error(`[${chain[i]}] ${(e && e.message) || e}`);
+      console.error('ai attempt failed', last.message);
+    }
+  }
+  throw last;
+}
+
 async function callModel(system, messages) {
   if (!KEY) throw new Error('AI API key missing');
+  if (PROVIDER === 'gemini') return callGeminiChain(system, messages);
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 25000);
   try {
-    if (PROVIDER === 'gemini') {
-      const gr = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL.replace(/^models\//, ''))}:generateContent`,
-        {
-          method: 'POST',
-          signal: ctl.signal,
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: system }] },
-            contents: messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-            // حدّ كبير لأن نماذج Gemini قد تستهلك جزءًا منه في التفكير الداخلي
-            generationConfig: { maxOutputTokens: 1500, temperature: 0.6 },
-          }),
-        }
-      );
-      const gj = await gr.json();
-      if (!gr.ok) throw new Error((gj && gj.error && gj.error.message) || `Gemini http ${gr.status}`);
-      const cand = gj.candidates && gj.candidates[0];
-      const txt = ((cand && cand.content && cand.content.parts) || []).filter((x) => x.text && !x.thought).map((x) => x.text).join('\n').trim();
-      if (!txt) throw new Error(`Gemini empty reply (${(cand && cand.finishReason) || (gj.promptFeedback && gj.promptFeedback.blockReason) || 'no candidates'})`);
-      return txt;
-    }
     const r = GROQ
       ? await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
