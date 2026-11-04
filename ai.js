@@ -1,16 +1,21 @@
 'use strict';
 // الذكاء الاصطناعي داخل البوت الابن: يردّ على عملاء المالك من «معلومات النشاط» وبنفس لهجتهم.
 // يعمل داخل بوت المستخدم نفسه (وليس بوت الصانع). المتغيرات البيئية:
-//   ANTHROPIC_API_KEY أو GROQ_API_KEY (أحدهما إجباري؛ مفاتيح gsk_ تُستخدم مع Groq)
-//   AI_MODEL (افتراضي claude-haiku-5-5 لـ Anthropic، وllama-3.3-70b-versatile لـ Groq)
+//   GEMINI_API_KEY (مُفضَّل) أو GROQ_API_KEY أو ANTHROPIC_API_KEY (واحد منها على الأقل)
+//   AI_MODEL (اختياري؛ الافتراضي gemini-flash-latest لـ Gemini)
 //   AI_DAILY_LIMIT (رد/مستخدم/يوم، افتراضي 30)   AI_COOLDOWN_MS (افتراضي 3000)
 const tg = require('./telegram');
 const store = require('./store');
 const W = require('./wallet');
 
-const KEY = process.env.GROQ_API_KEY || process.env.ANTHROPIC_API_KEY || '';
-const GROQ = KEY.startsWith('gsk_');
-const MODEL = process.env.AI_MODEL || (GROQ ? 'llama-3.3-70b-versatile' : 'claude-haiku-5-5');
+const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
+const KEY = GEMINI_KEY || process.env.GROQ_API_KEY || process.env.ANTHROPIC_API_KEY || '';
+const PROVIDER = GEMINI_KEY || KEY.startsWith('AIza') || KEY.startsWith('AQ.') ? 'gemini' : KEY.startsWith('gsk_') ? 'groq' : 'anthropic';
+const GROQ = PROVIDER === 'groq';
+// gemini-flash-latest اسم مستعار يتبع أحدث Flash تلقائيًا، فلا يتعطل البوت عند إيقاف الإصدارات القديمة
+const MODEL =
+  process.env.AI_MODEL ||
+  { gemini: 'gemini-flash-latest', groq: 'openai/gpt-oss-120b', anthropic: 'claude-haiku-5-5' }[PROVIDER];
 const COOLDOWN = Number(process.env.AI_COOLDOWN_MS || 3000);
 const HANDOFF = '[[HANDOFF]]';
 const LEAD = '[[LEAD]]';
@@ -53,12 +58,40 @@ async function callModel(system, messages) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 25000);
   try {
+    if (PROVIDER === 'gemini') {
+      const gr = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL.replace(/^models\//, ''))}:generateContent`,
+        {
+          method: 'POST',
+          signal: ctl.signal,
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': KEY },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+            // حدّ كبير لأن نماذج Gemini قد تستهلك جزءًا منه في التفكير الداخلي
+            generationConfig: { maxOutputTokens: 1500, temperature: 0.6 },
+          }),
+        }
+      );
+      const gj = await gr.json();
+      if (!gr.ok) throw new Error((gj && gj.error && gj.error.message) || `Gemini http ${gr.status}`);
+      const cand = gj.candidates && gj.candidates[0];
+      const txt = ((cand && cand.content && cand.content.parts) || []).filter((x) => x.text && !x.thought).map((x) => x.text).join('\n').trim();
+      if (!txt) throw new Error(`Gemini empty reply (${(cand && cand.finishReason) || (gj.promptFeedback && gj.promptFeedback.blockReason) || 'no candidates'})`);
+      return txt;
+    }
     const r = GROQ
       ? await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           signal: ctl.signal,
           headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` },
-          body: JSON.stringify({ model: MODEL, max_tokens: 500, messages: [{ role: 'system', content: system }].concat(messages) }),
+          body: JSON.stringify(
+            Object.assign(
+              { model: MODEL, max_tokens: 900, messages: [{ role: 'system', content: system }].concat(messages) },
+              // نماذج gpt-oss تفكّر قبل الرد: نخفّض التفكير كي لا يستهلك حدّ الرموز
+              /gpt-oss/.test(MODEL) ? { reasoning_effort: 'low' } : {}
+            )
+          ),
         })
       : await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
