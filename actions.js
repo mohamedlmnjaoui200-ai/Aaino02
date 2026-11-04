@@ -49,7 +49,18 @@ async function run(bot, user, button) {
     const next = a.op === 'add' ? round((Number(cur) || 0) + a.value) : a.value;
     if (d.scope === 'user') pu[d.id] = next;
     else pg[a.var] = next;
-    if (a.limit && a.limit !== 'always') pu[key] = now;
+  }
+
+  // حجز ذرّي لإجراءات «مرة واحدة/كل 24 ساعة» (يمنع تجاوز الحد بضغطتين متزامنتين)
+  for (const a of acts) {
+    if (!a.limit || a.limit === 'always') continue;
+    const ok = await store.claimAction(bot.id, user.id, `act_${a.id}`, a.limit === 'once' ? Infinity : DAY, now);
+    if (!ok) {
+      return {
+        ok: false,
+        text: a.limit === 'once' ? '⚠️ لا يمكنك تنفيذ هذا الإجراء أكثر من مرة.' : '⏳ لقد نفّذت هذا الإجراء قبل قليل. حاول لاحقًا.',
+      };
+    }
   }
 
   // الحفظ
