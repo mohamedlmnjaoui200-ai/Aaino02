@@ -4,11 +4,10 @@ const tg = require('./telegram');
 const store = require('./store');
 const { sendPage, extractMessage } = require('./render');
 const actions = require('./actions');
+const W = require('./wallet');
+const L = (bot) => W.limitsOf(bot); // الحدود حسب ترقيات البوت
 
 const BC_BUDGET = Number(process.env.BC_BUDGET_MS || 8000);
-const MAX_RKB = 20; // أقصى عدد أزرار الكيبورد السفلي
-const MAX_VARS = 20;
-const MAX_FORCE = 5;
 const SYS_VARS = ['name', 'first_name', 'username', 'id', 'bot'];
 const VAR_RE = /^[a-z][a-z0-9_]{1,19}$/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -46,7 +45,6 @@ const PERMS = {
   settings: '⚙️ الإعدادات',
 };
 const DEFAULT_PERMS = ['content', 'stats'];
-const MAX_ADMINS = 10;
 // قد تكون العناصر القديمة معرّفات نصية فقط، فنحوّلها إلى { id, name, perms }
 const adminEntries = (bot) =>
   ((bot.settings && bot.settings.admins) || []).map((x) =>
@@ -295,11 +293,11 @@ function varsPanel(bot) {
     ? names.map((n) => `• <code>{${n}}</code> — ${scopeLabel(bot.vars[n])} (${esc(bot.vars[n].value)})`).join('\n')
     : 'لا توجد متغيرات بعد.';
   const kb = names.map((n) => [ib(`{${n}}`, `a:vp:${n}`)]);
-  if (names.length < MAX_VARS) kb.push([ib('➕ متغير جديد', 'a:va')]);
+  if (names.length < L(bot).vars) kb.push([ib('➕ متغير جديد', 'a:va')]);
   kb.push([ib('إغلاق', 'a:cx')]);
   return {
     text:
-      `🗄 <b>المتغيرات</b> (${names.length}/${MAX_VARS})\n\n${lines}\n\n` +
+      `🗄 <b>المتغيرات</b> (${names.length}/${L(bot).vars})\n\n${lines}\n\n` +
       'استخدمها داخل أي رسالة بالشكل <code>{الاسم}</code>.\n' +
       'الجاهزة: <code>{name}</code> <code>{first_name}</code> <code>{username}</code> <code>{id}</code> <code>{bot}</code>',
     kb,
@@ -349,11 +347,11 @@ function adminsPanel(bot) {
     ? list.map((a, i) => `${i + 1}. ${esc(a.name || a.id)} (<code>${esc(a.id)}</code>) — ${(a.perms || []).length}/${Object.keys(PERMS).length} صلاحية`).join('\n')
     : 'لا يوجد مشرفون إضافيون.';
   const kb = list.map((a) => [ib(`👮 ${a.name || a.id}`, `a:mp:${a.id}`)]);
-  if (list.length < MAX_ADMINS) kb.push([ib('➕ إضافة مشرف', 'a:ma')]);
+  if (list.length < L(bot).admins) kb.push([ib('➕ إضافة مشرف', 'a:ma')]);
   kb.push([ib('إغلاق', 'a:cx')]);
   return {
     text:
-      `👮 <b>المشرفون</b> (${list.length}/${MAX_ADMINS})\n\n${lines}\n\n` +
+      `👮 <b>المشرفون</b> (${list.length}/${L(bot).admins})\n\n${lines}\n\n` +
       'أنت المالك وتملك كل الصلاحيات. المشرف يدير البوت من داخله حسب الصلاحيات التي تحددها له، ولا يستطيع إدارة المشرفين.',
     kb,
   };
@@ -405,13 +403,13 @@ async function channelsPanel(bot, token) {
   );
   const lines = list.length ? list.map((c, i) => `${i + 1}. ${states[i]} ${esc(c.title || c.chat)}`).join('\n') : 'لا توجد قنوات أو مجموعات.';
   const kb = [];
-  if (list.length < MAX_FORCE) kb.push([ib('➕ إضافة قناة/مجموعة', 'a:fa')]);
+  if (list.length < L(bot).force) kb.push([ib('➕ إضافة قناة/مجموعة', 'a:fa')]);
   list.forEach((c, i) => kb.push([ib(`🗑 ${c.title || c.chat}`, `a:fd:${i}`)]));
   kb.push([ib('✏️ نص رسالة الاشتراك', 'a:ft'), ib('↩️ الافتراضي', 'a:ff')]);
   kb.push([ib('إغلاق', 'a:cx')]);
   return {
     text:
-      `📡 <b>القنوات والمجموعات</b> (${list.length}/${MAX_FORCE})\n\n${lines}\n\n` +
+      `📡 <b>القنوات والمجموعات</b> (${list.length}/${L(bot).force})\n\n${lines}\n\n` +
       'يجب الاشتراك فيها قبل استخدام البوت. ⚠️ = البوت ليس مشرفًا فيها (يجب أن يكون <b>مشرفًا</b>).\n' +
       'المشرفون لا يخضعون للاشتراك الإجباري.',
     kb,
@@ -456,7 +454,8 @@ async function runActions(bot, token, msg, b) {
     return r.ok;
   } catch (e) {
     console.error('actions error:', e && e.message);
-    return true;
+    await say(token, msg.chat.id, '⚠️ تعذّر تنفيذ العملية الآن. حاول مرة أخرى.').catch(() => {});
+    return false;
   }
 }
 
@@ -493,7 +492,7 @@ async function onMessage(bot, token, msg, h) {
     case T.add:
       if (mode !== 'editor') break;
       if (!can(bot, uid, 'editor')) return deny();
-      if ((bot.rkb || []).length >= MAX_RKB) return say(token, chatId, `⚠️ وصلت للحد الأقصى (${MAX_RKB} زرًا).`);
+      if ((bot.rkb || []).length >= L(bot).rkb) return say(token, chatId, `⚠️ وصلت للحد الأقصى (${L(bot).rkb} زرًا).`);
       st.step = 'add_text';
       await save();
       return say(token, chatId, '✏️ أرسل <b>نص الزر</b> (حتى 40 حرفًا).\nللإلغاء: /cancel');
@@ -637,7 +636,7 @@ async function stepInput(bot, token, msg, st, save, h) {
       if (id === String(bot.owner)) return say(token, chatId, '⚠️ أنت المالك بالفعل.');
       const list = adminEntries(bot);
       if (list.some((a) => a.id === id)) return say(token, chatId, '⚠️ هذا المستخدم مشرف بالفعل.');
-      if (list.length >= MAX_ADMINS) return say(token, chatId, '⚠️ وصلت للحد الأقصى للمشرفين.');
+      if (list.length >= L(bot).admins) return say(token, chatId, '⚠️ وصلت للحد الأقصى للمشرفين.');
       const sub = await store.getSub(bot.id, id);
       if (!sub) return say(token, chatId, '⚠️ يجب أن يكون المستخدم قد فتح البوت (/start) أولًا ليصبح مشتركًا.');
       const entry = { id, name: (name || sub.name || id).slice(0, 40), perms: DEFAULT_PERMS.slice() };
@@ -752,7 +751,7 @@ async function stepInput(bot, token, msg, st, save, h) {
     case 'fs_add': {
       const chat = parseChannel(msg);
       if (chat === null) return say(token, chatId, '⚠️ أرسل معرّف القناة/المجموعة (@name) أو رابطها أو حوّل رسالة منها.');
-      if ((bot.settings.forceSub || []).length >= MAX_FORCE) return say(token, chatId, '⚠️ وصلت للحد الأقصى.');
+      if ((bot.settings.forceSub || []).length >= L(bot).force) return say(token, chatId, '⚠️ وصلت للحد الأقصى.');
       try {
         const entry = await verifyChat(bot, token, chat);
         const list = bot.settings.forceSub || [];
@@ -861,7 +860,7 @@ async function onCallback(bot, token, q) {
     case 'tn':
     case 'tp': {
       if (st.step !== 'add_target' || !st.data || !st.data.text) return answer({ text: 'انتهت صلاحية هذه الخطوة.', show_alert: true });
-      if ((bot.rkb || []).length >= MAX_RKB) return answer({ text: 'وصلت للحد الأقصى للأزرار.', show_alert: true });
+      if ((bot.rkb || []).length >= L(bot).rkb) return answer({ text: 'وصلت للحد الأقصى للأزرار.', show_alert: true });
       let pageId = arg;
       let isNew = false;
       if (op === 'tn') {
@@ -966,7 +965,7 @@ async function onCallback(bot, token, q) {
       return edit(p.text, p.kb);
     }
     case 'ma':
-      if (adminEntries(bot).length >= MAX_ADMINS) return answer({ text: 'وصلت للحد الأقصى للمشرفين.', show_alert: true });
+      if (adminEntries(bot).length >= L(bot).admins) return answer({ text: 'وصلت للحد الأقصى للمشرفين.', show_alert: true });
       st.step = 'adm_add';
       await save();
       await answer();
@@ -1125,7 +1124,7 @@ async function onCallback(bot, token, q) {
       return edit(p.text, p.kb);
     }
     case 'va':
-      if (Object.keys(bot.vars).length >= MAX_VARS) return answer({ text: 'وصلت للحد الأقصى للمتغيرات.', show_alert: true });
+      if (Object.keys(bot.vars).length >= L(bot).vars) return answer({ text: 'وصلت للحد الأقصى للمتغيرات.', show_alert: true });
       st.step = 'v_name';
       st.data = null;
       await save();
@@ -1204,7 +1203,7 @@ async function onCallback(bot, token, q) {
       return edit(p.text, p.kb);
     }
     case 'fa':
-      if ((bot.settings.forceSub || []).length >= MAX_FORCE) return answer({ text: 'وصلت للحد الأقصى.', show_alert: true });
+      if ((bot.settings.forceSub || []).length >= L(bot).force) return answer({ text: 'وصلت للحد الأقصى.', show_alert: true });
       st.step = 'fs_add';
       await save();
       await answer();
