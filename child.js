@@ -4,6 +4,7 @@ const store = require('./store');
 const { decrypt } = require('./crypto');
 const { sendPage, showPage, extractMessage, MEDIA } = require('./render');
 const admin = require('./admin');
+const ai = require('./ai');
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const MEMBER_OK = ['creator', 'administrator', 'member', 'restricted'];
@@ -131,6 +132,34 @@ async function forwardToOwner(bot, token, msg) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  الذكاء الاصطناعي: ردّ تلقائي بلهجة العميل من معلومات نشاط المالك     */
+/* ------------------------------------------------------------------ */
+async function handleAI(bot, token, msg) {
+  const send = (text) =>
+    tg.call(token, 'sendMessage', {
+      chat_id: msg.chat.id,
+      text,
+      reply_to_message_id: msg.message_id,
+      protect_content: !!bot.settings.protect,
+    });
+  let r;
+  try {
+    r = await ai.reply(bot, token, msg);
+  } catch (e) {
+    console.error('ai error', bot.id, e && e.message);
+    await send('⚠️ الخدمة مشغولة الآن، حاول بعد قليل.').catch(() => {});
+    return;
+  }
+  if (r.silent) return;
+  await send(r.text);
+  // طلب يحتاج بشرًا: نحوّله للمالك إن كان وضع التواصل مفعّلًا
+  if (r.handoff && bot.settings.feedback) {
+    const ok = await forwardToOwner(bot, token, msg).catch(() => false);
+    if (ok) store.incStat(bot.id, 'feedback').catch(() => {});
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  المعالجات                                                          */
 /* ------------------------------------------------------------------ */
 async function onMessage(bot, token, msg) {
@@ -168,6 +197,15 @@ async function onMessage(bot, token, msg) {
   if (isPrivate && msg.from) {
     const handled = await admin.onMessage(bot, token, msg, { deliver, gate });
     if (handled) return;
+  }
+
+  // رسالة نصية عادية والذكاء الاصطناعي مفعّل: يردّ البوت تلقائيًا
+  if (isPrivate && msg.from && msg.text) {
+    const a = ai.cfg(bot);
+    if (a.enabled && a.info) {
+      if (!(await gate(token, bot, msg.chat.id, msg.from.id))) return;
+      return handleAI(bot, token, msg);
+    }
   }
 
   // رسالة عادية في الخاص: تُمرَّر للمالك إن كان وضع التواصل مفعّلًا
