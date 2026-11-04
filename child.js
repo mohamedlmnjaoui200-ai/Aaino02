@@ -152,6 +152,22 @@ async function handleAI(bot, token, msg) {
   }
   if (r.silent) return;
   await send(r.text);
+  // 🔥 صائد العملاء (ترقية «ذكاء Pro»): تنبيه فوري للمالك
+  if (r.lead) {
+    const u = msg.from;
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ') || 'عميل';
+    tg
+      .call(process.env.MAIN_BOT_TOKEN, 'sendMessage', {
+        chat_id: bot.owner,
+        parse_mode: 'HTML',
+        text:
+          `🔥 <b>عميل محتمل</b> عبر @${esc(bot.username)}\n👤 ${esc(name)}${u.username ? ` (@${esc(u.username)})` : ''}\n🆔 <code>${u.id}</code>\n\n` +
+          `💬 ${esc(r.question || '').slice(0, 600)}\n🤖 ${esc(r.text).slice(0, 600)}`,
+        reply_markup: { inline_keyboard: [[{ text: '↩️ رد', callback_data: `rp:${bot.id}:${u.id}` }]] },
+      })
+      .then(() => store.incStat(bot.id, 'leads'))
+      .catch(() => {});
+  }
   // طلب يحتاج بشرًا: نحوّله للمالك إن كان وضع التواصل مفعّلًا
   if (r.handoff && bot.settings.feedback) {
     const ok = await forwardToOwner(bot, token, msg).catch(() => false);
@@ -246,7 +262,7 @@ async function onCallback(bot, token, q) {
     if (!page) return answer({ text: 'هذه الصفحة لم تعد متاحة.', show_alert: true });
     await answer();
     if (!(await gate(token, bot, chatId, q.from.id, q.message))) return;
-    store.incStat(bot.id, 'clicks').catch(() => {});
+    store.incStats(bot.id, ['clicks', `pg.${d.slice(2)}`]).catch(() => {});
     const r = await showPage(token, chatId, q.message, bot, page, { user: q.from });
     if (r.cached) await persistFid(bot, page);
     return;
