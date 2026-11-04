@@ -51,6 +51,7 @@ function joinLink(ch) {
 
 // يعيد true إن كان المستخدم مستوفيًا للشروط، وإلا يرسل رسالة الاشتراك ويعيد false
 async function gate(token, bot, chatId, uid, srcMsg) {
+  if (admin.isAdmin(bot, uid)) return true; // المشرفون لا يخضعون للاشتراك الإجباري
   const list = bot.settings.forceSub || [];
   if (!list.length) return true;
   const miss = await missingChannels(token, uid, list);
