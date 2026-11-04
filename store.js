@@ -1,6 +1,6 @@
 'use strict';
 // طبقة التخزين الدائم عبر MongoDB (Atlas)
-// المجموعات: users | bots | subs | refs | settings | cstate | uvars
+// المجموعات: users | bots | subs | refs | settings | cstate | uvars | wallets
 const { MongoClient } = require('mongodb');
 
 let clientPromise = global._mongoClientPromise;
@@ -95,9 +95,16 @@ async function usersPage(after, limit) {
 /* ------------------------------------------------------------------ */
 /*  البوتات                                                            */
 /* ------------------------------------------------------------------ */
+// الترقيات تُخزَّن خارج data حتى لا يمحوها saveBot عند الحفظ من نسخة قديمة
+function hydrate(d) {
+  if (!d || !d.data) return null;
+  const b = normalizeBot(d.data);
+  b.perks = d.perks || {};
+  return b;
+}
 async function getBot(id) {
   const d = await (await col('bots')).findOne({ _id: String(id) });
-  return d ? normalizeBot(d.data) : null;
+  return hydrate(d);
 }
 async function saveBot(bot) {
   await (await col('bots')).updateOne(
@@ -114,7 +121,7 @@ async function delBot(bot) {
 }
 async function botsOf(uid) {
   const docs = await (await col('bots')).find({ owner: String(uid) }).toArray();
-  return docs.map((d) => normalizeBot(d.data)).filter(Boolean);
+  return docs.map(hydrate).filter(Boolean);
 }
 async function allBotIds() {
   const docs = await (await col('bots')).find({}, { projection: { _id: 1 } }).toArray();
@@ -212,6 +219,81 @@ async function setGlobalVar(botId, name, value) {
   await (await col('bots')).updateOne({ _id: String(botId) }, { $set: { [`data.vars.${name}.value`]: value } });
 }
 
+
+/* ------------------------------------------------------------------ */
+/*  المحفظة (💎): كل العمليات ذرّية حتى لا يضيع رصيد مع الضغط المتكرر      */
+/* ------------------------------------------------------------------ */
+const DAY_MS = 24 * 3600 * 1000;
+async function ensureWallet(uid) {
+  await (await col('wallets')).updateOne(
+    { _id: String(uid) },
+    { $setOnInsert: { gems: 0, slots: 0, spent: 0, streak: 0, daily: 0, charges: [] } },
+    { upsert: true }
+  );
+}
+async function getWallet(uid) {
+  const d = await (await col('wallets')).findOne({ _id: String(uid) });
+  return d || { gems: 0, slots: 0, spent: 0, streak: 0, daily: 0 };
+}
+// يضيف جواهر؛ chargeId يمنع احتساب نفس الدفعة مرتين. يعيد true إن أُضيفت
+async function addGems(uid, n, chargeId) {
+  await ensureWallet(uid);
+  const f = { _id: String(uid) };
+  const up = { $inc: { gems: n } };
+  if (chargeId) {
+    f.charges = { $ne: String(chargeId) };
+    up.$push = { charges: { $each: [String(chargeId)], $slice: -50 } };
+  }
+  const r = await (await col('wallets')).updateOne(f, up);
+  return r.modifiedCount > 0;
+}
+// يخصم إن كان الرصيد كافيًا (شرط وخصم في عملية واحدة). extra مثل { slots: 1 }
+async function spendGems(uid, cost, extra) {
+  const r = await (await col('wallets')).updateOne(
+    { _id: String(uid), gems: { $gte: cost } },
+    { $inc: Object.assign({ gems: -cost, spent: cost }, extra || {}) }
+  );
+  return r.modifiedCount > 0;
+}
+// مكافأة يومية متصاعدة: 5 💎 + 2 لكل يوم متتالٍ (حتى 17)
+async function claimDaily(uid) {
+  await ensureWallet(uid);
+  const now = Date.now();
+  const w = await getWallet(uid);
+  const streak = w.daily && now - w.daily < 2 * DAY_MS ? (w.streak || 0) + 1 : 1;
+  const gems = 5 + 2 * Math.min(streak - 1, 6);
+  const r = await (await col('wallets')).updateOne(
+    { _id: String(uid), daily: { $lte: now - DAY_MS } },
+    { $set: { daily: now, streak }, $inc: { gems } }
+  );
+  if (!r.modifiedCount) return { ok: false, wait: Math.max(0, DAY_MS - (now - (w.daily || 0))) };
+  return { ok: true, gems, streak };
+}
+// ترقية بوت: تُفعَّل ذرّيًا مرة واحدة، ويمكن التراجع إن فشل الخصم
+async function claimPerk(botId, perk) {
+  const r = await (await col('bots')).updateOne(
+    { _id: String(botId), [`perks.${perk}`]: { $ne: true } },
+    { $set: { [`perks.${perk}`]: true } }
+  );
+  return r.modifiedCount > 0;
+}
+async function releasePerk(botId, perk) {
+  await (await col('bots')).updateOne({ _id: String(botId) }, { $unset: { [`perks.${perk}`]: '' } });
+}
+// يحجز تنفيذ إجراء محدود (مرة واحدة / كل مدة) ذرّيًا؛ window=Infinity لمرة واحدة
+async function claimAction(botId, uid, key, window, now) {
+  const c = await col('uvars');
+  const id = `${botId}:${uid}`;
+  await c.updateOne({ _id: id }, { $setOnInsert: { bot: String(botId) } }, { upsert: true });
+  const path = `vars.${key}`;
+  const cond =
+    window === Infinity
+      ? { [path]: { $exists: false } }
+      : { $or: [{ [path]: { $exists: false } }, { [path]: { $lt: now - window } }] };
+  const r = await c.updateOne(Object.assign({ _id: id }, cond), { $set: { [path]: now } });
+  return r.modifiedCount > 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  الإحالات                                                           */
 /* ------------------------------------------------------------------ */
@@ -283,4 +365,11 @@ module.exports = {
   getSettings,
   setSetting,
   counts,
+  getWallet,
+  addGems,
+  spendGems,
+  claimDaily,
+  claimPerk,
+  releasePerk,
+  claimAction,
 };
