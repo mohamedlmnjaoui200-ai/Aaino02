@@ -87,7 +87,6 @@ function mainMenu() {
   return [
     [btn('➕ إضافة بوت (بالتوكن)', 'new', 'success'), btn('➕ إضافة بوت (تلقائيًا)', 'auto', 'success')],
     [btn('🤖 قائمة البوتات', 'list', 'primary')],
-    [btn('💎 المتجر والمحفظة', 'shop', 'primary'), btn('🎁 المكافأة اليومية', 'daily', 'success')],
     [btn('👥 نظام الإحالة', 'ref'), btn('❓ مساعدة', 'help')],
     [btn('🎩 طلب الإعلان', 'ads'), btn('📞 جهات الاتصال', 'contact')],
   ];
@@ -97,8 +96,7 @@ const WELCOME =
   '👋 أهلًا بك في <b>صانع البوتات</b>\n\n' +
   'أنشئ بوت قوائم احترافي في دقيقة: صفحات متعددة، أزرار بالألوان، وسائط، أوامر مخصصة، بث للمشتركين، ' +
   'اشتراك إجباري، متغيرات وإجراءات، وإحصائيات.\n\n' +
-  '💎 اجمع الجواهر من <b>المكافأة اليومية</b> والإحالات، أو اشحنها بنجوم تيليجرام، ' +
-  'واشترِ بها مساحات بوتات وترقيات تفتح حدودًا أكبر.\n\nاضغط «قائمة البوتات» للبدء 👇';
+  '💎 المحفظة والمتجر داخل بوتك نفسه: افتح بوتك ← «🔐 الإدارة» ← «💎 المحفظة والمتجر».\n\nاضغط «قائمة البوتات» للبدء 👇';
 
 const HELP =
   '<b>طريقة الاستخدام</b>\n\n' +
@@ -108,7 +106,7 @@ const HELP =
   '4️⃣ أنشئ صفحات وأوامر مخصصة (مثل /prices).\n' +
   '5️⃣ فعّل الاشتراك الإجباري أو وضع التواصل من «الإعدادات».\n' +
   '6️⃣ أرسل بثًا لمشتركي بوتك من «بث رسالة».\n' +
-  '7️⃣ من «المتجر» اشترِ مساحات وترقيات بالجواهر 💎 (مكافأة يومية + إحالات مجانية).\n\n' +
+  '7️⃣ من بوتك ← «🔐 الإدارة» ← «💎 المحفظة والمتجر» اشترِ ترقيات ومساحات بالجواهر 💎 (مكافأة يومية + إحالات مجانية).\n\n' +
   '<b>المتغيّرات داخل النص:</b>\n' +
   '<code>{name}</code> الاسم الكامل • <code>{first_name}</code> الاسم الأول • ' +
   '<code>{username}</code> المعرّف • <code>{id}</code> الآيدي • <code>{bot}</code> معرّف البوت\n\n' +
@@ -144,7 +142,6 @@ async function botPanel(bot) {
     [btn('📄 الصفحات والقوائم', `pgs:${bot.id}`, 'primary')],
     [btn('⌨️ الأوامر', `cmds:${bot.id}`), btn('⚙️ الإعدادات', `set:${bot.id}`)],
     [btn('📢 بث رسالة', `bc:${bot.id}`, 'success'), btn('📊 الإحصائيات', `st:${bot.id}`)],
-    [btn('💎 ترقية البوت', `ub:${bot.id}`, 'primary')],
     [btn('🔑 تغيير التوكن', `rtok:${bot.id}`), btn('🗑 حذف البوت', `del:${bot.id}`, 'danger')],
     [btn('🔙 رجوع', 'list')],
   ];
@@ -580,9 +577,7 @@ async function onPayment(ctx, u) {
     const added = await store.addGems(ctx.uid, pack.gems, pay.telegram_payment_charge_id);
     if (!added) return; // دفعة مكرّرة
     const w = await store.getWallet(ctx.uid);
-    return send(ctx.chatId, `✅ تم الدفع! أُضيفت <b>${pack.gems}</b> ${W.GEM} إلى رصيدك.\n💰 رصيدك الآن: <b>${w.gems}</b> ${W.GEM}`, [
-      [btn('💎 المتجر', 'shop', 'primary')],
-    ]);
+    return send(ctx.chatId, `✅ تم الدفع! أُضيفت <b>${pack.gems}</b> ${W.GEM} إلى رصيدك.\n💰 رصيدك الآن: <b>${w.gems}</b> ${W.GEM}\n\nارجع إلى بوتك ← «🔐 الإدارة» ← «💎 المحفظة والمتجر» لصرفها.`, mainMenu());
   }
   const m = payload.match(/^slots:(\d+):(\d+)$/);
   if (!m || m[2] !== String(ctx.uid)) return;
@@ -891,7 +886,7 @@ async function onCallback(ctx) {
       const lim = await botLimit(uid, u);
       const count = (await store.botsOf(uid)).length;
       if (count >= lim) {
-        return show(ctx, `❌ وصلت للحد الأقصى (${lim} بوتات).`, [[btn('⭐ شراء مساحة', 'shop')], [btn('🔙 رجوع', 'menu')]]);
+        return show(ctx, `❌ وصلت للحد الأقصى (${lim} بوتات).\n💎 لشراء مساحة جديدة افتح أحد بوتاتك ← الإدارة ← المحفظة والمتجر.`, [[btn('🔙 رجوع', 'menu')]]);
       }
       const me = await mainMe();
       const sug = `mk${Math.random().toString(36).slice(2, 10)}_bot`;
