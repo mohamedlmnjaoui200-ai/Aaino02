@@ -2,6 +2,7 @@
 // عرض الصفحات: نص/وسائط + أزرار (روابط، صفحات، نسخ، تطبيق مصغّر) + متغيّرات
 const tg = require('./telegram');
 const { decrypt } = require('./crypto');
+const store = require('./store');
 
 const main = () => process.env.MAIN_BOT_TOKEN;
 
@@ -63,12 +64,35 @@ function varsOf(user, bot) {
   };
 }
 
+// المتغيرات المخصصة التي ينشئها صاحب البوت: عامة أو لكل مستخدم
+async function customVars(bot, user) {
+  const defs = (bot && bot.vars) || {};
+  const out = {};
+  let uv = null;
+  for (const n of Object.keys(defs)) {
+    const d = defs[n];
+    if (d.scope === 'user') {
+      if (uv === null) uv = user ? await store.getUVars(bot.id, user.id).catch(() => ({})) : {};
+      out[n] = String(uv[d.id] !== undefined ? uv[d.id] : d.value);
+    } else out[n] = String(d.value);
+  }
+  return out;
+}
+
+// خريطة كل المتغيرات المتاحة للنص (الجاهزة + المخصصة)
+async function varMap(bot, user) {
+  const base = user ? varsOf(user, bot) : {};
+  const m = Object.assign({}, await customVars(bot, user), base);
+  return Object.keys(m).length ? m : null;
+}
+
 function applyVars(text, entities, v) {
-  const re = /\{(name|first_name|username|id|bot)\}/g;
+  const re = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   const reps = [];
   let m;
   while ((m = re.exec(text))) {
-    reps.push({ start: m.index, end: m.index + m[0].length, val: v[m[1]] });
+    if (!Object.prototype.hasOwnProperty.call(v, m[1])) continue; // متغير غير معروف يبقى كما هو
+    reps.push({ start: m.index, end: m.index + m[0].length, val: String(v[m[1]]) });
   }
   if (!reps.length) return { text, entities };
   let out = '';
@@ -160,7 +184,7 @@ function fileIdOf(result, type) {
 // يعيد { result, cached } — cached=true تعني أن bot.pages تغيّرت (حُفظ file_id للبوت الابن) ويجب حفظ البوت
 async function sendPage(token, chatId, bot, page, o = {}) {
   const m = page.message || { text: `📄 ${page.title}`, entities: [] };
-  const v = o.user ? varsOf(o.user, bot) : null;
+  const v = await varMap(bot, o.user);
   const src = v ? applyVars(m.text || '', m.entities || [], v) : { text: m.text || '', entities: m.entities || [] };
   const kb = buildKeyboard(page);
 
@@ -221,7 +245,7 @@ async function showPage(token, chatId, srcMsg, bot, page, o = {}) {
   const canEdit = srcMsg && srcMsg.text !== undefined && (!m || !m.media);
   if (canEdit) {
     const mm = m || { text: `📄 ${page.title}`, entities: [] };
-    const v = o.user ? varsOf(o.user, bot) : null;
+    const v = await varMap(bot, o.user);
     const s = v ? applyVars(mm.text || '', mm.entities || [], v) : { text: mm.text || '', entities: mm.entities || [] };
     const p = {
       chat_id: chatId,
