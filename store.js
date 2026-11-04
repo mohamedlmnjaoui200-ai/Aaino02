@@ -1,6 +1,6 @@
 'use strict';
 // طبقة التخزين الدائم عبر MongoDB (Atlas)
-// المجموعات: users | bots | subs | refs | settings | cstate
+// المجموعات: users | bots | subs | refs | settings | cstate | uvars
 const { MongoClient } = require('mongodb');
 
 let clientPromise = global._mongoClientPromise;
@@ -66,6 +66,7 @@ function normalizeBot(b) {
     b.settings
   );
   b.rkb = Array.isArray(b.rkb) ? b.rkb : []; // أزرار الكيبورد السفلي: { id, text, page, newRow }
+  b.vars = b.vars && typeof b.vars === 'object' && !Array.isArray(b.vars) ? b.vars : {}; // متغيرات مخصصة: { name: { id, scope, type, value } }
   b.v = 2;
   return b;
 }
@@ -109,6 +110,7 @@ async function delBot(bot) {
   await (await col('bots')).deleteOne({ _id: String(bot.id) });
   await (await col('subs')).deleteMany({ bot: String(bot.id) });
   await (await col('cstate')).deleteMany({ _id: { $regex: '^' + String(bot.id) + ':' } });
+  await (await col('uvars')).deleteMany({ bot: String(bot.id) });
 }
 async function botsOf(uid) {
   const docs = await (await col('bots')).find({ owner: String(uid) }).toArray();
@@ -191,6 +193,26 @@ async function saveCState(botId, uid, s) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  قيم المتغيرات الخاصة بكل مستخدم (مفتاحها معرّف المتغير vid)            */
+/* ------------------------------------------------------------------ */
+async function getUVars(botId, uid) {
+  const d = await (await col('uvars')).findOne({ _id: `${botId}:${uid}` });
+  return (d && d.vars) || {};
+}
+async function setUVar(botId, uid, vid, value) {
+  await (await col('uvars')).updateOne(
+    { _id: `${botId}:${uid}` },
+    { $set: { bot: String(botId), [`vars.${vid}`]: value } },
+    { upsert: true }
+  );
+}
+
+// تغيير قيمة متغير عام مباشرة (دون إعادة كتابة وثيقة البوت كلها)
+async function setGlobalVar(botId, name, value) {
+  await (await col('bots')).updateOne({ _id: String(botId) }, { $set: { [`data.vars.${name}.value`]: value } });
+}
+
+/* ------------------------------------------------------------------ */
 /*  الإحالات                                                           */
 /* ------------------------------------------------------------------ */
 // يعيد true إذا سُجّلت الإحالة لأول مرة
@@ -252,6 +274,9 @@ module.exports = {
   incStat,
   getStats,
   getCState,
+  getUVars,
+  setGlobalVar,
+  setUVar,
   saveCState,
   addRef,
   refCount,
